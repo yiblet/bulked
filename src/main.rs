@@ -51,7 +51,7 @@ fn main() {
     let config = SearchConfig {
         pattern: pattern.to_string(),
         root_path: PathBuf::from(path),
-        context_lines: 0, // Phase 2 will add context
+        context_lines: 20, // Phase 2: default 20 lines of context
         respect_gitignore: true,
     };
 
@@ -59,9 +59,22 @@ fn main() {
     let searcher = Searcher::new(fs, matcher, walker, config);
     let result = searcher.search_all();
 
-    // Simple output (Phase 3 will add proper formatting)
+    // Phase 2: Output with context (Phase 3 will add better formatting)
     for m in &result.matches {
-        println!("{}:{}: {}", m.file_path.display(), m.line_number, m.line_content);
+        println!("\n{}:{}", m.file_path.display(), m.line_number);
+
+        // Context before
+        for ctx in &m.context_before {
+            println!("  {:4} | {}", ctx.line_number, ctx.content);
+        }
+
+        // Match line
+        println!("  {:4} > {}", m.line_number, m.line_content);
+
+        // Context after
+        for ctx in &m.context_after {
+            println!("  {:4} | {}", ctx.line_number, ctx.content);
+        }
     }
 
     if result.errors.len() > 0 {

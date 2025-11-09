@@ -809,7 +809,16 @@ end
 ---
 
 ### Phase 2 — Context Extraction
-**Status:** Planned
+**Status:** ✅ Complete
+
+**Progress:**
+- Created context extraction module with pure functions
+- Implemented extract_context() handling all edge cases (file boundaries, empty files, single-line files)
+- Integrated context extraction into Searcher when context_lines > 0
+- Added 10 new unit tests for context extraction edge cases
+- Total: 52 tests passing + 1 doctest
+- CLI now displays matches with 20 lines of context before and after
+- Overlapping contexts shown separately (simpler approach per requirements)
 
 #### A) Feature Slice
 Add context extraction capability to get N lines before and after each match. Extend `match_result` type to include context lines. Handle edge cases: file start/end boundaries, empty files, single-line files.

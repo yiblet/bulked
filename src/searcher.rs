@@ -4,6 +4,7 @@
 //! using abstract dependencies (FileSystem, Matcher, Walker traits). This
 //! implements the functional core of the hexagonal architecture.
 
+use crate::context::add_context_to_match;
 use crate::filesystem::FileSystem;
 use crate::matcher::{MatchInfo, Matcher};
 use crate::types::{MatchResult, SearchConfig, SearchError, SearchResult};
@@ -82,17 +83,25 @@ where
         let match_infos = self.matcher.search_in_content(&content);
 
         // Convert to MatchResult
-        let matches = match_infos
+        let mut matches: Vec<MatchResult> = match_infos
             .into_iter()
             .map(|info: MatchInfo| MatchResult {
                 file_path: path.clone(),
                 line_number: info.line_num,
                 line_content: info.line_content,
                 byte_offset: info.byte_offset,
-                context_before: vec![], // Phase 2
-                context_after: vec![],  // Phase 2
+                context_before: vec![],
+                context_after: vec![],
             })
             .collect();
+
+        // Add context if requested (Phase 2)
+        if self.config.context_lines > 0 {
+            matches = matches
+                .into_iter()
+                .map(|m| add_context_to_match(&self.fs, m, self.config.context_lines))
+                .collect();
+        }
 
         Ok(matches)
     }
@@ -318,5 +327,49 @@ mod tests {
 
         assert_eq!(result.matches.len(), 0);
         assert_eq!(result.errors.len(), 0);
+    }
+
+    /// Test Searcher with context extraction (Phase 2)
+    #[test]
+    fn test_searcher_with_context() {
+        let fs = MemoryFS::new();
+        let file = PathBuf::from("/test/file.txt");
+        let content = "line 1\nline 2\nMATCH here\nline 4\nline 5\nline 6";
+        fs.add_file(&file, content).unwrap();
+
+        let matcher = GrepMatcher::compile("MATCH").unwrap();
+        let walker = SimpleWalker::new(vec![file.clone()]);
+
+        let config = SearchConfig {
+            pattern: "MATCH".to_string(),
+            root_path: PathBuf::from("/test"),
+            context_lines: 2, // Request 2 lines of context
+            respect_gitignore: false,
+        };
+
+        let searcher = Searcher::new(fs, matcher, walker, config);
+        let result = searcher.search_all();
+
+        assert_eq!(result.matches.len(), 1);
+        let m = &result.matches[0];
+
+        // Verify match details
+        assert_eq!(m.file_path, file);
+        assert_eq!(m.line_number, 3);
+        assert!(m.line_content.contains("MATCH"));
+
+        // Verify context before (lines 1-2)
+        assert_eq!(m.context_before.len(), 2);
+        assert_eq!(m.context_before[0].line_number, 1);
+        assert_eq!(m.context_before[0].content, "line 1");
+        assert_eq!(m.context_before[1].line_number, 2);
+        assert_eq!(m.context_before[1].content, "line 2");
+
+        // Verify context after (lines 4-5)
+        assert_eq!(m.context_after.len(), 2);
+        assert_eq!(m.context_after[0].line_number, 4);
+        assert_eq!(m.context_after[0].content, "line 4");
+        assert_eq!(m.context_after[1].line_number, 5);
+        assert_eq!(m.context_after[1].content, "line 5");
     }
 }

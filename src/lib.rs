@@ -45,6 +45,7 @@
 //! println!("Found {} matches", result.matches.len());
 //! ```
 
+pub mod context;
 pub mod filesystem;
 pub mod matcher;
 pub mod searcher;
