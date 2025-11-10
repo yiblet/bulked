@@ -4,6 +4,7 @@
 //! This is the production adapter used by the CLI.
 
 use super::FileSystem;
+use std::borrow::Cow;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -60,8 +61,8 @@ impl FileSystem for PhysicalFS {
             return Err("Line numbers are 1-indexed".to_string());
         }
 
-        let file =
-            fs::File::open(path).map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
+        let file = fs::File::open(path)
+            .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
         let reader = BufReader::new(file);
 
         let mut lines = reader.lines();
@@ -94,8 +95,8 @@ impl FileSystem for PhysicalFS {
             ));
         }
 
-        let file =
-            fs::File::open(path).map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
+        let file = fs::File::open(path)
+            .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
         let reader = BufReader::new(file);
 
         let mut result = Vec::new();
@@ -110,7 +111,8 @@ impl FileSystem for PhysicalFS {
                 break;
             }
 
-            let line = line_result.map_err(|e| format!("Failed to read line {}: {}", line_num, e))?;
+            let line =
+                line_result.map_err(|e| format!("Failed to read line {}: {}", line_num, e))?;
             result.push(line);
         }
 
@@ -119,6 +121,10 @@ impl FileSystem for PhysicalFS {
         }
 
         Ok(result)
+    }
+
+    fn as_real_path<'a>(&self, path: &'a Path) -> Option<Cow<'a, Path>> {
+        Some(Cow::Borrowed(path))
     }
 }
 

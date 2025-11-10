@@ -123,4 +123,142 @@ mod integration_tests {
             );
         }
     }
+
+    /// SUCCESS CRITERIA TEST - Phase 3
+    ///
+    /// This is the integration test specified in the plan that verifies:
+    /// - Matches are found in correct files
+    /// - Each match includes exactly 20 lines before and 20 lines after (or up to file boundaries)
+    /// - Line numbers are accurate
+    /// - Gitignored files are excluded by default
+    ///
+    /// Uses virtual filesystem (MemoryFS) for hermetic testing.
+    #[test]
+    fn test_bulked_search_with_context() {
+        // Create test directory with realistic structure
+        let fs = MemoryFS::new();
+
+        // Create .gitignore
+        fs.add_file(&PathBuf::from("/project/.gitignore"), "*.log\ntemp/\n")
+            .unwrap();
+
+        // Create a file with enough lines for context testing (50 lines)
+        let mut file1_lines = vec![];
+        for i in 1..=50 {
+            if i == 25 {
+                file1_lines.push("TARGET match on line 25".to_string());
+            } else {
+                file1_lines.push(format!("line {}", i));
+            }
+        }
+        fs.add_file(
+            &PathBuf::from("/project/file1.txt"),
+            &file1_lines.join("\n"),
+        )
+        .unwrap();
+
+        // Create another file with match near boundaries
+        let file2_lines = vec!["line 1", "line 2", "TARGET at line 3", "line 4"];
+        fs.add_file(
+            &PathBuf::from("/project/file2.txt"),
+            &file2_lines.join("\n"),
+        )
+        .unwrap();
+
+        // Create a file that should be ignored
+        fs.add_file(&PathBuf::from("/project/ignored.log"), "TARGET ignored")
+            .unwrap();
+
+        // Use real GrepMatcher
+        let matcher = GrepMatcher::compile("TARGET").unwrap();
+
+        // Use SimpleWalker (simulating gitignore filtering)
+        let walker = SimpleWalker::new(vec![
+            PathBuf::from("/project/file1.txt"),
+            PathBuf::from("/project/file2.txt"),
+            // NOT including ignored.log
+        ]);
+
+        let config = SearchConfig {
+            pattern: "TARGET".to_string(),
+            root_path: PathBuf::from("/project"),
+            context_lines: 20,
+            respect_gitignore: true,
+        };
+
+        let searcher = Searcher::new(fs, matcher, walker, config);
+        let result = searcher.search_all();
+
+        // Verify correct number of matches (2 matches in non-ignored files)
+        assert_eq!(
+            result.matches.len(),
+            2,
+            "Should find exactly 2 matches in non-ignored files"
+        );
+        assert_eq!(result.errors.len(), 0, "Should have no errors");
+
+        // Verify first match (file1.txt, line 25 with full context)
+        let match1 = result
+            .matches
+            .iter()
+            .find(|m| m.file_path.to_str().unwrap().contains("file1.txt"))
+            .expect("Should find match in file1.txt");
+
+        assert_eq!(match1.line_number, 25);
+        assert!(match1.line_content.contains("TARGET"));
+
+        // Verify context before (should be exactly 20 lines: lines 5-24)
+        assert_eq!(
+            match1.context_before.len(),
+            20,
+            "Should have exactly 20 lines of context before"
+        );
+        assert_eq!(match1.context_before[0].line_number, 5);
+        assert_eq!(match1.context_before[19].line_number, 24);
+
+        // Verify context after (should be exactly 20 lines: lines 26-45)
+        assert_eq!(
+            match1.context_after.len(),
+            20,
+            "Should have exactly 20 lines of context after"
+        );
+        assert_eq!(match1.context_after[0].line_number, 26);
+        assert_eq!(match1.context_after[19].line_number, 45);
+
+        // Verify second match (file2.txt, line 3 near start - limited context)
+        let match2 = result
+            .matches
+            .iter()
+            .find(|m| m.file_path.to_str().unwrap().contains("file2.txt"))
+            .expect("Should find match in file2.txt");
+
+        assert_eq!(match2.line_number, 3);
+        assert!(match2.line_content.contains("TARGET"));
+
+        // Verify context before (only 2 lines available: lines 1-2)
+        assert_eq!(
+            match2.context_before.len(),
+            2,
+            "Should have only 2 lines before (file boundary)"
+        );
+        assert_eq!(match2.context_before[0].line_number, 1);
+        assert_eq!(match2.context_before[1].line_number, 2);
+
+        // Verify context after (only 1 line available: line 4)
+        assert_eq!(
+            match2.context_after.len(),
+            1,
+            "Should have only 1 line after (file boundary)"
+        );
+        assert_eq!(match2.context_after[0].line_number, 4);
+
+        // Verify gitignored file was NOT searched
+        assert!(
+            !result
+                .matches
+                .iter()
+                .any(|m| m.file_path.to_str().unwrap().contains("ignored.log")),
+            "Should not find matches in gitignored files"
+        );
+    }
 }

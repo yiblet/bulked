@@ -7,7 +7,10 @@
 pub mod memory;
 pub mod physical;
 
-use std::path::Path;
+use std::{
+    borrow::Cow,
+    path::{Path, PathBuf},
+};
 
 /// Abstract filesystem interface
 ///
@@ -19,6 +22,8 @@ pub trait FileSystem: Send + Sync {
     ///
     /// Returns an error if the file doesn't exist, isn't readable, or contains invalid UTF-8.
     fn read_to_string(&self, path: &Path) -> Result<String, String>;
+
+    fn as_real_path<'a>(&self, path: &'a Path) -> Option<Cow<'a, Path>>;
 
     /// Check if a path exists
     fn exists(&self, path: &Path) -> bool;
@@ -98,6 +103,9 @@ mod tests {
         fs.add_file(&text_path, "normal text").unwrap();
 
         assert!(fs.is_binary(&binary_path), "Should detect binary file");
-        assert!(!fs.is_binary(&text_path), "Should not detect text as binary");
+        assert!(
+            !fs.is_binary(&text_path),
+            "Should not detect text as binary"
+        );
     }
 }

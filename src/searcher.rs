@@ -70,38 +70,39 @@ where
             return Err(SearchError::BinaryFileSkipped(path.clone()));
         }
 
-        // Read file contents
-        let content = self.fs.read_to_string(path).map_err(|e| {
-            tracing::warn!("Failed to read {}: {}", path.display(), e);
-            SearchError::FileReadError {
-                path: path.clone(),
-                error: e,
-            }
-        })?;
+        let match_infos = match self
+            .fs
+            .as_real_path(path)
+            .and_then(|path| Some(self.matcher.search_path()?(&path)))
+        {
+            None => {
+                // Read file contents
+                let content = self.fs.read_to_string(path).map_err(|e| {
+                    tracing::warn!("Failed to read {}: {}", path.display(), e);
+                    SearchError::FileReadError {
+                        path: path.clone(),
+                        error: e,
+                    }
+                })?;
 
-        // Search for matches
-        let match_infos = self.matcher.search_in_content(&content);
+                // Search for matches
+                self.matcher.search_in_content(&content)
+            }
+
+            Some(matches) => matches.map_err(|e| {
+                tracing::warn!("Search error: {}", e);
+                SearchError::FileReadError {
+                    path: path.clone(),
+                    error: e,
+                }
+            })?,
+        };
 
         // Convert to MatchResult
-        let mut matches: Vec<MatchResult> = match_infos
+        let matches: Vec<MatchResult> = match_infos
             .into_iter()
-            .map(|info: MatchInfo| MatchResult {
-                file_path: path.clone(),
-                line_number: info.line_num,
-                line_content: info.line_content,
-                byte_offset: info.byte_offset,
-                context_before: vec![],
-                context_after: vec![],
-            })
+            .map(|info: MatchInfo| MatchResult::from_match_info(info, path.clone()))
             .collect();
-
-        // Add context if requested (Phase 2)
-        if self.config.context_lines > 0 {
-            matches = matches
-                .into_iter()
-                .map(|m| add_context_to_match(&self.fs, m, self.config.context_lines))
-                .collect();
-        }
 
         Ok(matches)
     }
@@ -166,6 +167,8 @@ mod tests {
             line_num: 2,
             byte_offset: 7,
             line_content: "TARGET line".to_string(),
+            previous_lines: String::new(),
+            next_lines: String::new(),
         });
 
         // Setup SimpleWalker

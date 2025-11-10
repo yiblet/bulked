@@ -4,6 +4,8 @@
 //! regex pattern matching. This allows testing search logic with predictable
 //! match results without depending on actual regex engine behavior.
 
+use std::path::Path;
+
 pub mod grep;
 pub mod stub;
 
@@ -16,6 +18,10 @@ pub struct MatchInfo {
     pub byte_offset: usize,
     /// Content of the line containing the match
     pub line_content: String,
+
+    pub previous_lines: String,
+
+    pub next_lines: String,
 }
 
 /// Abstract pattern matching interface
@@ -40,6 +46,11 @@ pub trait Matcher: Send + Sync {
     ///
     /// This is a helper method for simpler matching scenarios.
     fn is_match(&self, text: &str) -> bool;
+
+    /// Search for matches in file content
+    ///
+    /// Returns all matches found in the content, with line numbers and positions.
+    fn search_path(&self) -> Option<impl FnMut(&Path) -> Result<Vec<MatchInfo>, String>>;
 }
 
 #[cfg(test)]
@@ -81,6 +92,8 @@ mod tests {
             line_num: 10,
             byte_offset: 100,
             line_content: "test line".to_string(),
+            previous_lines: String::new(),
+            next_lines: String::new(),
         });
 
         let matches = matcher.search_in_content("any content");

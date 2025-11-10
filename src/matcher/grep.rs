@@ -4,16 +4,125 @@
 //! crates to perform fast regex matching. This is the production implementation
 //! based on the same infrastructure used by ripgrep and Helix.
 
+use std::path::Path;
+
 use super::{MatchInfo, Matcher};
 use grep::matcher::Matcher as GrepMatcherTrait;
 use grep::regex::RegexMatcher as GrepRegexMatcher;
-use grep::searcher::sinks::UTF8;
-use grep::searcher::{BinaryDetection, SearcherBuilder};
+use grep::searcher::{BinaryDetection, Searcher, SearcherBuilder};
 
 /// Production matcher using grep-regex
 #[derive(Debug)]
 pub struct GrepMatcher {
     matcher: GrepRegexMatcher,
+    context: usize,
+}
+
+mod sink {
+    use std::io;
+
+    use grep::searcher::{Searcher, Sink, SinkError, SinkMatch};
+
+    use crate::matcher::MatchInfo;
+
+    #[derive(Debug)]
+    pub struct UTF8<'a>(&'a mut Vec<MatchInfo>, String);
+
+    impl<'a> UTF8<'a> {
+        pub fn new(matches: &'a mut Vec<MatchInfo>) -> Self {
+            Self(matches, String::new())
+        }
+    }
+
+    impl<'a> Sink for UTF8<'a> {
+        type Error = io::Error;
+
+        fn matched(
+            &mut self,
+            _searcher: &Searcher,
+            mat: &SinkMatch<'_>,
+        ) -> Result<bool, io::Error> {
+            let matched = match std::str::from_utf8(mat.bytes()) {
+                Ok(matched) => matched,
+                Err(err) => return Err(io::Error::error_message(err)),
+            };
+            let line_number = match mat.line_number() {
+                Some(line_number) => line_number,
+                None => {
+                    let msg = "line numbers not enabled";
+                    return Err(io::Error::error_message(msg));
+                }
+            };
+
+            let byte_offset = mat.absolute_byte_offset();
+
+            let prev = std::mem::take(&mut self.1);
+            self.0.push(MatchInfo {
+                line_num: line_number as usize,
+                byte_offset: byte_offset as usize,
+                line_content: matched.trim_end().to_string(),
+                previous_lines: prev,
+                next_lines: String::new(),
+            });
+            Ok(true)
+        }
+
+        fn context(
+            &mut self,
+            _searcher: &Searcher,
+            mat: &grep::searcher::SinkContext<'_>,
+        ) -> Result<bool, Self::Error> {
+            let matched = match std::str::from_utf8(mat.bytes()) {
+                Ok(matched) => matched,
+                Err(err) => return Err(io::Error::error_message(err)),
+            };
+
+
+            match mat.kind() {
+                grep::searcher::SinkContextKind::Before => {
+                    self.1.push_str(matched);
+                }
+
+                grep::searcher::SinkContextKind::After => {
+                    if let Some(last) = self.0.last_mut() {
+                        last.next_lines.push_str(matched);
+                    };
+                }
+
+                _ => {}
+            };
+
+            Ok(true)
+        }
+    }
+}
+
+impl GrepMatcher {
+    pub fn with_context(self, context: usize) -> Self {
+        Self {
+            matcher: self.matcher.clone(),
+            context,
+        }
+    }
+
+    fn build_searcher(&self) -> Searcher {
+        // Create a searcher with binary detection
+        // BinaryDetection::quit(b'\x00') makes grep stop searching immediately
+        // when it encounters a null byte, which is a reliable indicator of binary content.
+        // This matches the behavior of ripgrep and other grep tools.
+        let mut searcher = SearcherBuilder::new();
+
+        searcher
+            .binary_detection(BinaryDetection::quit(b'\x00'))
+            .line_number(true);
+
+        if self.context > 0 {
+            searcher.before_context(self.context);
+            searcher.after_context(self.context);
+        }
+
+        searcher.build()
+    }
 }
 
 impl Matcher for GrepMatcher {
@@ -24,38 +133,21 @@ impl Matcher for GrepMatcher {
         let matcher = GrepRegexMatcher::new(pattern)
             .map_err(|e| format!("Invalid regex pattern '{}': {}", pattern, e))?;
 
-        Ok(Self { matcher })
+        Ok(Self {
+            matcher,
+            context: 0,
+        })
     }
 
     fn search_in_content(&self, content: &str) -> Vec<MatchInfo> {
         let mut matches = Vec::new();
 
-        // Create a searcher with binary detection
-        let mut searcher = SearcherBuilder::new()
-            .binary_detection(BinaryDetection::quit(b'\x00'))
-            .line_number(true)
-            .build();
-
+        let mut searcher = self.build_searcher();
         // Use UTF8 sink to collect matches
         let result = searcher.search_slice(
             &self.matcher,
             content.as_bytes(),
-            UTF8(|line_num, line_content| {
-                // Calculate approximate byte offset (sum of previous line lengths)
-                let byte_offset = content
-                    .lines()
-                    .take(line_num as usize - 1)
-                    .map(|l| l.len() + 1) // +1 for newline
-                    .sum();
-
-                matches.push(MatchInfo {
-                    line_num: line_num as usize,
-                    byte_offset,
-                    line_content: line_content.trim_end().to_string(),
-                });
-
-                Ok(true) // Continue searching
-            }),
+            sink::UTF8::new(&mut matches),
         );
 
         // Log any errors but don't fail
@@ -68,6 +160,22 @@ impl Matcher for GrepMatcher {
 
     fn is_match(&self, text: &str) -> bool {
         self.matcher.is_match(text.as_bytes()).unwrap_or(false)
+    }
+
+    fn search_path(&self) -> Option<impl FnMut(&Path) -> Result<Vec<MatchInfo>, String>> {
+        Some(move |path: &Path| {
+            let mut matches = Vec::new();
+            let mut searcher = self.build_searcher();
+            // Use UTF8 sink to collect matches
+            let result = searcher.search_path(&self.matcher, path, sink::UTF8::new(&mut matches));
+
+            // Log any errors but don't fail
+            if let Err(e) = result {
+                tracing::warn!("Search error: {}", e);
+            }
+
+            Ok(matches)
+        })
     }
 }
 
@@ -89,11 +197,11 @@ mod tests {
         let matcher = GrepMatcher::compile("fo+bar").unwrap();
 
         // "fo+bar" means "f" followed by one or more "o" followed by "bar"
-        assert!(matcher.is_match("foobar"));   // Two o's
+        assert!(matcher.is_match("foobar")); // Two o's
         assert!(matcher.is_match("fooooobar")); // Many o's
-        assert!(matcher.is_match("fobar"));    // One o (minimum required by +)
-        assert!(!matcher.is_match("fbar"));    // No o, should not match
-        assert!(!matcher.is_match("f bar"));   // Space instead of o
+        assert!(matcher.is_match("fobar")); // One o (minimum required by +)
+        assert!(!matcher.is_match("fbar")); // No o, should not match
+        assert!(!matcher.is_match("f bar")); // Space instead of o
     }
 
     #[test]

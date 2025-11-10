@@ -5,7 +5,11 @@
 //! regex engine behavior.
 
 use super::{MatchInfo, Matcher};
-use std::sync::{Arc, Mutex};
+use std::{
+    any::Any,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 /// Stub matcher for testing
 ///
@@ -88,6 +92,12 @@ impl Matcher for StubMatcher {
     fn is_match(&self, text: &str) -> bool {
         (self.predicate)(text)
     }
+
+    fn search_path(
+        &self,
+    ) -> Option<impl FnMut(&std::path::Path) -> Result<Vec<MatchInfo>, String>> {
+        None::<Box<dyn FnMut(&Path) -> Result<Vec<MatchInfo>, String>>>
+    }
 }
 
 #[cfg(test)]
@@ -108,6 +118,8 @@ mod tests {
             line_num: 5,
             byte_offset: 42,
             line_content: "test line".to_string(),
+            previous_lines: String::new(),
+            next_lines: String::new(),
         });
 
         let matches = matcher.search_in_content("ignored");
@@ -125,11 +137,15 @@ mod tests {
             line_num: 1,
             byte_offset: 0,
             line_content: "first".to_string(),
+            previous_lines: String::new(),
+            next_lines: String::new(),
         });
         matcher.add_match(MatchInfo {
             line_num: 2,
             byte_offset: 10,
             line_content: "second".to_string(),
+            previous_lines: String::new(),
+            next_lines: String::new(),
         });
 
         let matches = matcher.search_in_content("ignored");

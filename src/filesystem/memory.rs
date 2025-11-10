@@ -4,6 +4,7 @@
 //! It's used for hermetic testing without touching the real filesystem.
 
 use super::FileSystem;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -68,6 +69,10 @@ impl Default for MemoryFS {
 }
 
 impl FileSystem for MemoryFS {
+    fn as_real_path<'a>(&self, _: &'a Path) -> Option<Cow<'a, Path>> {
+        None
+    }
+
     fn read_to_string(&self, path: &Path) -> Result<String, String> {
         let files = self
             .files

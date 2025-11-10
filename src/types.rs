@@ -5,6 +5,8 @@
 
 use std::path::PathBuf;
 
+use crate::matcher::MatchInfo;
+
 /// A single match result from searching a file
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchResult {
@@ -22,6 +24,40 @@ pub struct MatchResult {
     pub context_after: Vec<ContextLine>,
 }
 
+impl MatchResult {
+    pub fn from_match_info(match_info: MatchInfo, path: PathBuf) -> Self {
+        Self {
+            file_path: path,
+            line_number: match_info.line_num,
+            line_content: match_info.line_content,
+            byte_offset: match_info.byte_offset,
+            context_before: {
+                let count = match_info.previous_lines.split("\n").count();
+                match_info
+                    .previous_lines
+                    .split("\n")
+                    .enumerate()
+                    .map(|line| ContextLine {
+                        line_number: match_info.line_num - count + line.0,
+                        content: line.1.to_string(),
+                    })
+                    .collect()
+            },
+            context_after: {
+                match_info
+                    .previous_lines
+                    .split("\n")
+                    .enumerate()
+                    .map(|line| ContextLine {
+                        line_number: match_info.line_num + line.0,
+                        content: line.1.to_string(),
+                    })
+                    .collect()
+            },
+        }
+    }
+}
+
 /// A line of context around a match
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextLine {
@@ -35,10 +71,7 @@ pub struct ContextLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchError {
     /// Failed to read a file
-    FileReadError {
-        path: PathBuf,
-        error: String,
-    },
+    FileReadError { path: PathBuf, error: String },
     /// Skipped a binary file
     BinaryFileSkipped(PathBuf),
     /// Invalid regex pattern
