@@ -20,6 +20,7 @@ pub(crate) struct StubMatcher {
     predicate: Arc<dyn Fn(&str) -> bool + Send + Sync>,
 }
 
+#[allow(dead_code)]
 impl StubMatcher {
     /// Create a new stub matcher with no predefined matches
     pub fn new() -> Self {

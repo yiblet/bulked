@@ -4,13 +4,11 @@
 //! defaults and production implementations (PhysicalFS, GrepMatcher, IgnoreWalker).
 
 use crate::filesystem::physical::PhysicalFS;
-use crate::filesystem::FileSystem;
-use crate::matcher::grep::GrepMatcher;
 use crate::matcher::Matcher;
+use crate::matcher::grep::GrepMatcher;
 use crate::searcher::Searcher;
-use crate::types::{SearchConfig, SearchResult};
+use crate::types::SearchResult;
 use crate::walker::ignore_walker::IgnoreWalker;
-use crate::walker::Walker;
 use std::path::PathBuf;
 
 /// Configuration for executing a search with production adapters
@@ -69,8 +67,7 @@ impl ExecuteConfig {
 /// # Example
 ///
 /// ```no_run
-/// use bulked::execute::{execute, ExecuteConfig};
-/// use std::path::PathBuf;
+/// use bulked::{execute, ExecuteConfig};
 ///
 /// let config = ExecuteConfig::new("TODO", ".")
 ///     .with_context_lines(5)
@@ -89,40 +86,13 @@ pub fn execute(config: ExecuteConfig) -> Result<SearchResult, String> {
     // Create production adapters
     let fs = PhysicalFS::new();
 
-    let matcher = GrepMatcher::compile(&config.pattern)?
-        .with_context(config.context_lines);
+    let matcher = GrepMatcher::compile(&config.pattern)?.with_context(config.context_lines);
 
     let walker = IgnoreWalker::new(&config.path, config.respect_gitignore);
 
-    // Create internal search config
-    let search_config = SearchConfig {
-        pattern: config.pattern.clone(),
-        root_path: config.path.clone(),
-        respect_gitignore: config.respect_gitignore,
-    };
-
     // Execute search
-    let searcher = Searcher::new(fs, matcher, walker, search_config);
+    let searcher = Searcher::new(fs, matcher, walker);
     Ok(searcher.search_all())
-}
-
-/// Execute a search with custom implementations (internal use for testing)
-///
-/// This allows internal code and tests to provide custom FileSystem, Matcher,
-/// and Walker implementations.
-pub(crate) fn execute_with_adapters<FS, M, W>(
-    fs: FS,
-    matcher: M,
-    walker: W,
-    config: SearchConfig,
-) -> SearchResult
-where
-    FS: FileSystem,
-    M: Matcher,
-    W: Walker,
-{
-    let searcher = Searcher::new(fs, matcher, walker, config);
-    searcher.search_all()
 }
 
 #[cfg(test)]
@@ -140,7 +110,7 @@ mod tests {
         assert_eq!(config.pattern, "test");
         assert_eq!(config.path, PathBuf::from("/path"));
         assert_eq!(config.context_lines, 10);
-        assert_eq!(config.respect_gitignore, false);
+        assert!(!config.respect_gitignore);
     }
 
     #[test]
@@ -148,11 +118,11 @@ mod tests {
         let config = ExecuteConfig::new("pattern", "/some/path");
 
         assert_eq!(config.context_lines, 20);
-        assert_eq!(config.respect_gitignore, true);
+        assert!(config.respect_gitignore);
     }
 
     #[test]
-    fn test_execute_with_adapters() {
+    fn test_execute_with_memory_fs() {
         // Setup MemoryFS with test file
         let fs = MemoryFS::new();
         let test_file = PathBuf::from("/test/file.txt");
@@ -162,14 +132,9 @@ mod tests {
         let matcher = GrepMatcher::compile("TARGET").unwrap().with_context(1);
         let walker = SimpleWalker::new(vec![test_file.clone()]);
 
-        let config = SearchConfig {
-            pattern: "TARGET".to_string(),
-            root_path: PathBuf::from("/test"),
-            respect_gitignore: false,
-        };
-
-        // Execute search
-        let result = execute_with_adapters(fs, matcher, walker, config);
+        // Execute search using Searcher directly
+        let searcher = Searcher::new(fs, matcher, walker);
+        let result = searcher.search_all();
 
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.matches[0].line_number, 2);

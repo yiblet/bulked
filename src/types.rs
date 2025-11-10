@@ -76,17 +76,6 @@ pub enum SearchError {
     PatternError(String),
 }
 
-/// Configuration for a search operation
-#[derive(Debug, Clone)]
-pub struct SearchConfig {
-    /// Regex pattern to search for
-    pub pattern: String,
-    /// Root directory or file to search
-    pub root_path: PathBuf,
-    /// Whether to respect .gitignore files
-    pub respect_gitignore: bool,
-}
-
 /// Result of a search operation
 #[derive(Debug, Clone)]
 pub struct SearchResult {

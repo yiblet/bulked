@@ -20,6 +20,7 @@ pub(crate) struct MemoryFS {
     files: Arc<RwLock<HashMap<PathBuf, Vec<u8>>>>,
 }
 
+#[allow(dead_code)]
 impl MemoryFS {
     /// Create a new empty in-memory filesystem
     pub fn new() -> Self {
@@ -99,60 +100,6 @@ impl FileSystem for MemoryFS {
         // In MemoryFS, everything stored is a file
         self.exists(path)
     }
-
-    fn read_line_at(&self, path: &Path, line_number: usize) -> Result<String, String> {
-        if line_number == 0 {
-            return Err("Line numbers are 1-indexed".to_string());
-        }
-
-        let content = self.read_to_string(path)?;
-        let lines: Vec<&str> = content.lines().collect();
-
-        if line_number > lines.len() {
-            return Err(format!(
-                "Line {} out of range (file has {} lines)",
-                line_number,
-                lines.len()
-            ));
-        }
-
-        Ok(lines[line_number - 1].to_string())
-    }
-
-    fn read_line_range(
-        &self,
-        path: &Path,
-        start_line: usize,
-        end_line: usize,
-    ) -> Result<Vec<String>, String> {
-        if start_line == 0 || end_line == 0 {
-            return Err("Line numbers are 1-indexed".to_string());
-        }
-
-        if start_line > end_line {
-            return Err(format!(
-                "Start line {} is greater than end line {}",
-                start_line, end_line
-            ));
-        }
-
-        let content = self.read_to_string(path)?;
-        let lines: Vec<&str> = content.lines().collect();
-
-        if start_line > lines.len() {
-            return Err(format!(
-                "Start line {} out of range (file has {} lines)",
-                start_line,
-                lines.len()
-            ));
-        }
-
-        let actual_end = end_line.min(lines.len());
-        Ok(lines[start_line - 1..actual_end]
-            .iter()
-            .map(|s| s.to_string())
-            .collect())
-    }
 }
 
 #[cfg(test)]
@@ -179,43 +126,6 @@ mod tests {
 
         assert!(!fs.exists(&path));
         assert!(fs.read_to_string(&path).is_err());
-    }
-
-    #[test]
-    fn test_memory_fs_read_line_at() {
-        let fs = MemoryFS::new();
-        let path = PathBuf::from("/test.txt");
-        fs.add_file(&path, "line 1\nline 2\nline 3\n").unwrap();
-
-        assert_eq!(fs.read_line_at(&path, 1).unwrap(), "line 1");
-        assert_eq!(fs.read_line_at(&path, 2).unwrap(), "line 2");
-        assert_eq!(fs.read_line_at(&path, 3).unwrap(), "line 3");
-
-        assert!(fs.read_line_at(&path, 0).is_err()); // Invalid line number
-        assert!(fs.read_line_at(&path, 4).is_err()); // Out of range
-    }
-
-    #[test]
-    fn test_memory_fs_read_line_range() {
-        let fs = MemoryFS::new();
-        let path = PathBuf::from("/test.txt");
-        fs.add_file(&path, "line 1\nline 2\nline 3\nline 4\nline 5\n")
-            .unwrap();
-
-        let lines = fs.read_line_range(&path, 2, 4).unwrap();
-        assert_eq!(lines, vec!["line 2", "line 3", "line 4"]);
-
-        // Test range at boundaries
-        let lines = fs.read_line_range(&path, 1, 2).unwrap();
-        assert_eq!(lines, vec!["line 1", "line 2"]);
-
-        // Test range beyond file end (should clamp)
-        let lines = fs.read_line_range(&path, 3, 100).unwrap();
-        assert_eq!(lines, vec!["line 3", "line 4", "line 5"]);
-
-        // Test invalid ranges
-        assert!(fs.read_line_range(&path, 0, 2).is_err());
-        assert!(fs.read_line_range(&path, 3, 2).is_err());
     }
 
     #[test]

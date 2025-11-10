@@ -23,24 +23,23 @@
 //! ```
 
 // Internal modules
+mod execute;
 mod filesystem;
 mod matcher;
 mod searcher;
 mod types;
 mod walker;
-mod execute;
 
 // Re-export main API
-pub use execute::{execute, ExecuteConfig};
+pub use execute::{ExecuteConfig, execute};
 pub use types::{ContextLine, MatchResult, SearchResult};
 
 #[cfg(test)]
 mod integration_tests {
-    use crate::execute::execute_with_adapters;
     use crate::filesystem::memory::MemoryFS;
     use crate::matcher::Matcher; // Import the trait
     use crate::matcher::grep::GrepMatcher;
-    use crate::types::SearchConfig;
+    use crate::searcher::Searcher;
     use crate::walker::simple::SimpleWalker;
     use std::path::PathBuf;
 
@@ -78,13 +77,8 @@ mod integration_tests {
             // Intentionally not including test.tmp (simulating .gitignore)
         ]);
 
-        let config = SearchConfig {
-            pattern: "fn ".to_string(),
-            root_path: PathBuf::from("/project"),
-            respect_gitignore: true,
-        };
-
-        let result = execute_with_adapters(fs, matcher, walker, config);
+        let searcher = Searcher::new(fs, matcher, walker);
+        let result = searcher.search_all();
 
         // Should find "fn " in both .rs files
         assert!(result.matches.len() >= 2, "Should find at least 2 matches");
@@ -135,7 +129,7 @@ mod integration_tests {
         .unwrap();
 
         // Create another file with match near boundaries
-        let file2_lines = vec!["line 1", "line 2", "TARGET at line 3", "line 4"];
+        let file2_lines = ["line 1", "line 2", "TARGET at line 3", "line 4"];
         fs.add_file(
             &PathBuf::from("/project/file2.txt"),
             &file2_lines.join("\n"),
@@ -156,13 +150,8 @@ mod integration_tests {
             // NOT including ignored.log
         ]);
 
-        let config = SearchConfig {
-            pattern: "TARGET".to_string(),
-            root_path: PathBuf::from("/project"),
-            respect_gitignore: true,
-        };
-
-        let result = execute_with_adapters(fs, matcher, walker, config);
+        let searcher = Searcher::new(fs, matcher, walker);
+        let result = searcher.search_all();
 
         // Verify correct number of matches (2 matches in non-ignored files)
         assert_eq!(

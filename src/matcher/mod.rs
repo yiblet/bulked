@@ -45,6 +45,7 @@ pub trait Matcher: Send + Sync {
     /// Check if a single line matches the pattern
     ///
     /// This is a helper method for simpler matching scenarios.
+    #[allow(dead_code)]
     fn is_match(&self, text: &str) -> bool;
 
     /// Search for matches in file content

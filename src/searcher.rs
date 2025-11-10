@@ -6,9 +6,9 @@
 
 use crate::filesystem::FileSystem;
 use crate::matcher::{MatchInfo, Matcher};
-use crate::types::{MatchResult, SearchConfig, SearchError, SearchResult};
+use crate::types::{MatchResult, SearchError, SearchResult};
 use crate::walker::Walker;
-use std::path::PathBuf;
+use std::path::Path;
 
 /// Core search orchestrator
 ///
@@ -23,7 +23,6 @@ where
     fs: FS,
     matcher: M,
     walker: W,
-    config: SearchConfig,
 }
 
 impl<FS, M, W> Searcher<FS, M, W>
@@ -32,13 +31,12 @@ where
     M: Matcher,
     W: Walker,
 {
-    /// Create a new searcher with the given dependencies and configuration
-    pub fn new(fs: FS, matcher: M, walker: W, config: SearchConfig) -> Self {
+    /// Create a new searcher with the given dependencies
+    pub fn new(fs: FS, matcher: M, walker: W) -> Self {
         Self {
             fs,
             matcher,
             walker,
-            config,
         }
     }
 
@@ -46,11 +44,11 @@ where
     ///
     /// Returns Ok with matches if successful, or Err with a SearchError if the file
     /// couldn't be searched.
-    fn search_file(&self, path: &PathBuf) -> Result<Vec<MatchResult>, SearchError> {
+    fn search_file(&self, path: &Path) -> Result<Vec<MatchResult>, SearchError> {
         // Check if file exists
         if !self.fs.exists(path) {
             return Err(SearchError::FileReadError {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 error: "File does not exist".to_string(),
             });
         }
@@ -58,7 +56,7 @@ where
         // Check if it's actually a file
         if !self.fs.is_file(path) {
             return Err(SearchError::FileReadError {
-                path: path.clone(),
+                path: path.to_path_buf(),
                 error: "Not a file".to_string(),
             });
         }
@@ -76,7 +74,7 @@ where
                 let content = self.fs.read_to_string(path).map_err(|e| {
                     tracing::warn!("Failed to read {}: {}", path.display(), e);
                     SearchError::FileReadError {
-                        path: path.clone(),
+                        path: path.to_path_buf(),
                         error: e,
                     }
                 })?;
@@ -88,7 +86,7 @@ where
             Some(matches) => matches.map_err(|e| {
                 tracing::warn!("Search error: {}", e);
                 SearchError::FileReadError {
-                    path: path.clone(),
+                    path: path.to_path_buf(),
                     error: e,
                 }
             })?,
@@ -97,7 +95,7 @@ where
         // Convert to MatchResult
         let matches: Vec<MatchResult> = match_infos
             .into_iter()
-            .map(|info: MatchInfo| MatchResult::from_match_info(info, path.clone()))
+            .map(|info: MatchInfo| MatchResult::from_match_info(info, path.to_path_buf()))
             .collect();
 
         Ok(matches)
@@ -166,16 +164,8 @@ mod tests {
 
         // Setup SimpleWalker
         let walker = SimpleWalker::new(vec![test_path.clone()]);
-
-        // Setup config
-        let config = SearchConfig {
-            pattern: "TARGET".to_string(),
-            root_path: PathBuf::from("/test"),
-            respect_gitignore: false,
-        };
-
         // Create searcher with all test doubles
-        let searcher = Searcher::new(fs, stub_matcher, walker, config);
+        let searcher = Searcher::new(fs, stub_matcher, walker);
 
         // Execute search
         let result = searcher.search_all();
@@ -208,16 +198,8 @@ mod tests {
 
         // Setup walker
         let walker = SimpleWalker::new(vec![file1.clone(), file2.clone()]);
-
-        // Setup config
-        let config = SearchConfig {
-            pattern: "hello".to_string(),
-            root_path: PathBuf::from("/src"),
-            respect_gitignore: false,
-        };
-
         // Create searcher
-        let searcher = Searcher::new(fs, matcher, walker, config);
+        let searcher = Searcher::new(fs, matcher, walker);
 
         // Execute search
         let result = searcher.search_all();
@@ -248,13 +230,7 @@ mod tests {
         let matcher = GrepMatcher::compile("match").unwrap();
         let walker = SimpleWalker::new(vec![binary_file.clone(), text_file.clone()]);
 
-        let config = SearchConfig {
-            pattern: "match".to_string(),
-            root_path: PathBuf::from("/test"),
-            respect_gitignore: false,
-        };
-
-        let searcher = Searcher::new(fs, matcher, walker, config);
+        let searcher = Searcher::new(fs, matcher, walker);
         let result = searcher.search_all();
 
         // Should find match in text file only
@@ -274,13 +250,7 @@ mod tests {
         let matcher = GrepMatcher::compile("test").unwrap();
         let walker = SimpleWalker::new(vec![nonexistent.clone()]);
 
-        let config = SearchConfig {
-            pattern: "test".to_string(),
-            root_path: PathBuf::from("/"),
-            respect_gitignore: false,
-        };
-
-        let searcher = Searcher::new(fs, matcher, walker, config);
+        let searcher = Searcher::new(fs, matcher, walker);
         let result = searcher.search_all();
 
         // Should have no matches
@@ -304,13 +274,7 @@ mod tests {
         let matcher = GrepMatcher::compile("nonexistent").unwrap();
         let walker = SimpleWalker::new(vec![file]);
 
-        let config = SearchConfig {
-            pattern: "nonexistent".to_string(),
-            root_path: PathBuf::from("/test"),
-            respect_gitignore: false,
-        };
-
-        let searcher = Searcher::new(fs, matcher, walker, config);
+        let searcher = Searcher::new(fs, matcher, walker);
         let result = searcher.search_all();
 
         assert_eq!(result.matches.len(), 0);
@@ -328,13 +292,7 @@ mod tests {
         let matcher = GrepMatcher::compile("MATCH").unwrap().with_context(2);
         let walker = SimpleWalker::new(vec![file.clone()]);
 
-        let config = SearchConfig {
-            pattern: "MATCH".to_string(),
-            root_path: PathBuf::from("/test"),
-            respect_gitignore: false,
-        };
-
-        let searcher = Searcher::new(fs, matcher, walker, config);
+        let searcher = Searcher::new(fs, matcher, walker);
         let result = searcher.search_all();
 
         assert_eq!(result.matches.len(), 1);

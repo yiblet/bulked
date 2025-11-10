@@ -15,6 +15,7 @@ pub(crate) struct SimpleWalker {
     files: Vec<PathBuf>,
 }
 
+#[allow(dead_code)]
 impl SimpleWalker {
     /// Create a new simple walker with the given file list
     pub fn new(files: Vec<PathBuf>) -> Self {

@@ -7,10 +7,7 @@
 pub mod memory;
 pub mod physical;
 
-use std::{
-    borrow::Cow,
-    path::Path,
-};
+use std::{borrow::Cow, path::Path};
 
 /// Abstract filesystem interface
 ///
@@ -30,21 +27,6 @@ pub trait FileSystem: Send + Sync {
 
     /// Check if a path points to a file (not a directory)
     fn is_file(&self, path: &Path) -> bool;
-
-    /// Read a specific line from a file (1-indexed)
-    ///
-    /// Added for Phase 2 context extraction.
-    fn read_line_at(&self, path: &Path, line_number: usize) -> Result<String, String>;
-
-    /// Read a range of lines from a file (inclusive, 1-indexed)
-    ///
-    /// Added for Phase 2 context extraction.
-    fn read_line_range(
-        &self,
-        path: &Path,
-        start_line: usize,
-        end_line: usize,
-    ) -> Result<Vec<String>, String>;
 }
 
 #[cfg(test)]
@@ -87,5 +69,4 @@ mod tests {
 
         test_filesystem_contract(fs, &test_path, test_content);
     }
-
 }

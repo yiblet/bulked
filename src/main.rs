@@ -1,6 +1,6 @@
 // Phase 3: Full CLI interface with clap
 
-use bulked::{execute, ExecuteConfig};
+use bulked::{ExecuteConfig, execute};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -90,11 +90,8 @@ fn main() {
     }
 
     // Exit with appropriate code
-    if result.matches.is_empty() && result.errors.is_empty() {
-        std::process::exit(0);
-    } else if !result.matches.is_empty() {
-        std::process::exit(0);
-    } else {
+    // Exit with error only if there were errors but no matches
+    if result.matches.is_empty() && !result.errors.is_empty() {
         std::process::exit(1);
     }
 }

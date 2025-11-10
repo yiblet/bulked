@@ -6,7 +6,6 @@
 use super::FileSystem;
 use std::borrow::Cow;
 use std::fs;
-use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 /// Physical filesystem adapter
@@ -34,73 +33,6 @@ impl FileSystem for PhysicalFS {
 
     fn is_file(&self, path: &Path) -> bool {
         path.is_file()
-    }
-
-    fn read_line_at(&self, path: &Path, line_number: usize) -> Result<String, String> {
-        if line_number == 0 {
-            return Err("Line numbers are 1-indexed".to_string());
-        }
-
-        let file = fs::File::open(path)
-            .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
-        let reader = BufReader::new(file);
-
-        let mut lines = reader.lines();
-        for _ in 1..line_number {
-            if lines.next().is_none() {
-                return Err(format!("Line {} out of range", line_number));
-            }
-        }
-
-        lines
-            .next()
-            .ok_or_else(|| format!("Line {} out of range", line_number))?
-            .map_err(|e| format!("Failed to read line: {}", e))
-    }
-
-    fn read_line_range(
-        &self,
-        path: &Path,
-        start_line: usize,
-        end_line: usize,
-    ) -> Result<Vec<String>, String> {
-        if start_line == 0 || end_line == 0 {
-            return Err("Line numbers are 1-indexed".to_string());
-        }
-
-        if start_line > end_line {
-            return Err(format!(
-                "Start line {} is greater than end line {}",
-                start_line, end_line
-            ));
-        }
-
-        let file = fs::File::open(path)
-            .map_err(|e| format!("Failed to open {}: {}", path.display(), e))?;
-        let reader = BufReader::new(file);
-
-        let mut result = Vec::new();
-        for (idx, line_result) in reader.lines().enumerate() {
-            let line_num = idx + 1;
-
-            if line_num < start_line {
-                continue;
-            }
-
-            if line_num > end_line {
-                break;
-            }
-
-            let line =
-                line_result.map_err(|e| format!("Failed to read line {}: {}", line_num, e))?;
-            result.push(line);
-        }
-
-        if result.is_empty() && start_line > 1 {
-            return Err(format!("Start line {} out of range", start_line));
-        }
-
-        Ok(result)
     }
 
     fn as_real_path<'a>(&self, path: &'a Path) -> Option<Cow<'a, Path>> {
