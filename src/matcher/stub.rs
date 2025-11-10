@@ -14,7 +14,8 @@ use std::{
 ///
 /// This is a test double that returns predefined matches.
 /// It allows complete control over match behavior in tests.
-pub struct StubMatcher {
+#[allow(dead_code)]
+pub(crate) struct StubMatcher {
     matches: Arc<Mutex<Vec<MatchInfo>>>,
     predicate: Arc<dyn Fn(&str) -> bool + Send + Sync>,
 }

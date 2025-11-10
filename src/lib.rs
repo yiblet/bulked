@@ -1,66 +1,46 @@
 //! Bulked - Recursive grep with context
 //!
-//! This library provides a grep-like search tool that shows context lines
-//! around each match. It's built using hexagonal architecture with dependency
-//! injection for testability.
-//!
-//! # Architecture
-//!
-//! The codebase follows hexagonal architecture (Ports and Adapters):
-//!
-//! - **Ports** (abstract interfaces): `FileSystem`, `Matcher`, `Walker` traits
-//! - **Adapters** (concrete implementations):
-//!   - Production: `PhysicalFS`, `GrepMatcher`, `IgnoreWalker`
-//!   - Testing: `MemoryFS`, `StubMatcher`, `SimpleWalker`
-//! - **Functional Core**: `Searcher` depends only on trait abstractions
+//! This library provides a simple API for searching files with regex patterns
+//! and extracting surrounding context lines.
 //!
 //! # Example
 //!
-//! ```rust,no_run
-//! use bulked::filesystem::physical::PhysicalFS;
-//! use bulked::matcher::grep::GrepMatcher;
-//! use bulked::matcher::Matcher; // Import the trait
-//! use bulked::walker::ignore_walker::IgnoreWalker;
-//! use bulked::searcher::Searcher;
-//! use bulked::types::SearchConfig;
-//! use std::path::PathBuf;
+//! ```no_run
+//! use bulked::{execute, ExecuteConfig};
 //!
-//! // Create production adapters
-//! let fs = PhysicalFS::new();
-//! let matcher = GrepMatcher::compile("pattern").unwrap().with_context(20);
-//! let walker = IgnoreWalker::new(".", true);
+//! let config = ExecuteConfig::new("TODO", ".")
+//!     .with_context_lines(5)
+//!     .with_respect_gitignore(true);
 //!
-//! // Configure search
-//! let config = SearchConfig {
-//!     pattern: "pattern".to_string(),
-//!     root_path: PathBuf::from("."),
-//!     respect_gitignore: true,
-//! };
-//!
-//! // Run search
-//! let searcher = Searcher::new(fs, matcher, walker, config);
-//! let result = searcher.search_all();
-//!
-//! println!("Found {} matches", result.matches.len());
+//! match execute(config) {
+//!     Ok(result) => {
+//!         for m in &result.matches {
+//!             println!("{}:{} - {}", m.file_path.display(), m.line_number, m.line_content);
+//!         }
+//!     }
+//!     Err(e) => eprintln!("Error: {}", e),
+//! }
 //! ```
 
-pub mod context;
-pub mod filesystem;
-pub mod matcher;
-pub mod searcher;
-pub mod types;
-pub mod walker;
+// Internal modules
+mod filesystem;
+mod matcher;
+mod searcher;
+mod types;
+mod walker;
+mod execute;
 
-// Re-export commonly used types
-pub use types::{MatchResult, SearchConfig, SearchError, SearchResult};
+// Re-export main API
+pub use execute::{execute, ExecuteConfig};
+pub use types::{ContextLine, MatchResult, SearchResult};
 
 #[cfg(test)]
 mod integration_tests {
-    use super::*;
+    use crate::execute::execute_with_adapters;
     use crate::filesystem::memory::MemoryFS;
     use crate::matcher::Matcher; // Import the trait
     use crate::matcher::grep::GrepMatcher;
-    use crate::searcher::Searcher;
+    use crate::types::SearchConfig;
     use crate::walker::simple::SimpleWalker;
     use std::path::PathBuf;
 
@@ -104,8 +84,7 @@ mod integration_tests {
             respect_gitignore: true,
         };
 
-        let searcher = Searcher::new(fs, matcher, walker, config);
-        let result = searcher.search_all();
+        let result = execute_with_adapters(fs, matcher, walker, config);
 
         // Should find "fn " in both .rs files
         assert!(result.matches.len() >= 2, "Should find at least 2 matches");
@@ -183,8 +162,7 @@ mod integration_tests {
             respect_gitignore: true,
         };
 
-        let searcher = Searcher::new(fs, matcher, walker, config);
-        let result = searcher.search_all();
+        let result = execute_with_adapters(fs, matcher, walker, config);
 
         // Verify correct number of matches (2 matches in non-ignored files)
         assert_eq!(

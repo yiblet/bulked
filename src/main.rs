@@ -1,11 +1,6 @@
 // Phase 3: Full CLI interface with clap
 
-use bulked::filesystem::physical::PhysicalFS;
-use bulked::matcher::Matcher;
-use bulked::matcher::grep::GrepMatcher;
-use bulked::searcher::Searcher;
-use bulked::types::SearchConfig;
-use bulked::walker::ignore_walker::IgnoreWalker;
+use bulked::{execute, ExecuteConfig};
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -51,28 +46,18 @@ fn main() {
             .init();
     }
 
-    // Create production adapters
-    let fs = PhysicalFS::new();
+    // Configure and execute search
+    let config = ExecuteConfig::new(cli.pattern, cli.path)
+        .with_context_lines(cli.context)
+        .with_respect_gitignore(!cli.no_ignore);
 
-    let matcher = match GrepMatcher::compile(&cli.pattern) {
-        Ok(m) => m.with_context(cli.context),
+    let result = match execute(config) {
+        Ok(result) => result,
         Err(e) => {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
     };
-
-    let walker = IgnoreWalker::new(&cli.path, !cli.no_ignore);
-
-    let config = SearchConfig {
-        pattern: cli.pattern.clone(),
-        root_path: cli.path.clone(),
-        respect_gitignore: !cli.no_ignore,
-    };
-
-    // Run search
-    let searcher = Searcher::new(fs, matcher, walker, config);
-    let result = searcher.search_all();
 
     // Output results with formatting
     for m in &result.matches {

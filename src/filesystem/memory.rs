@@ -14,8 +14,9 @@ use std::sync::{Arc, RwLock};
 /// This is a "fake" implementation that provides a working filesystem
 /// entirely in memory. It's fast, deterministic, and allows complete
 /// control over the filesystem state in tests.
+#[allow(dead_code)]
 #[derive(Clone)]
-pub struct MemoryFS {
+pub(crate) struct MemoryFS {
     files: Arc<RwLock<HashMap<PathBuf, Vec<u8>>>>,
 }
 
