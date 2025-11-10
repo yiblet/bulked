@@ -4,7 +4,6 @@
 //! using abstract dependencies (FileSystem, Matcher, Walker traits). This
 //! implements the functional core of the hexagonal architecture.
 
-use crate::context::add_context_to_match;
 use crate::filesystem::FileSystem;
 use crate::matcher::{MatchInfo, Matcher};
 use crate::types::{MatchResult, SearchConfig, SearchError, SearchResult};
@@ -64,11 +63,8 @@ where
             });
         }
 
-        // Skip binary files
-        if self.fs.is_binary(path) {
-            tracing::debug!("Skipping binary file: {}", path.display());
-            return Err(SearchError::BinaryFileSkipped(path.clone()));
-        }
+        // Note: Binary file detection is handled by GrepMatcher via BinaryDetection::quit
+        // which automatically stops searching when encountering null bytes
 
         let match_infos = match self
             .fs
@@ -124,9 +120,6 @@ where
                 Err(err) => {
                     // Log errors but continue searching
                     match &err {
-                        SearchError::BinaryFileSkipped(_) => {
-                            // Debug level for binary files (expected)
-                        }
                         SearchError::FileReadError { path, error } => {
                             tracing::warn!("Error reading {}: {}", path.display(), error);
                         }
@@ -178,7 +171,6 @@ mod tests {
         let config = SearchConfig {
             pattern: "TARGET".to_string(),
             root_path: PathBuf::from("/test"),
-            context_lines: 0,
             respect_gitignore: false,
         };
 
@@ -221,7 +213,6 @@ mod tests {
         let config = SearchConfig {
             pattern: "hello".to_string(),
             root_path: PathBuf::from("/src"),
-            context_lines: 0,
             respect_gitignore: false,
         };
 
@@ -243,6 +234,7 @@ mod tests {
     }
 
     /// Test Searcher handles binary files correctly
+    /// Binary files are now automatically skipped by GrepMatcher via BinaryDetection::quit
     #[test]
     fn test_searcher_skips_binary_files() {
         let fs = MemoryFS::new();
@@ -259,23 +251,18 @@ mod tests {
         let config = SearchConfig {
             pattern: "match".to_string(),
             root_path: PathBuf::from("/test"),
-            context_lines: 0,
             respect_gitignore: false,
         };
 
         let searcher = Searcher::new(fs, matcher, walker, config);
         let result = searcher.search_all();
 
-        // Should find match in text file
+        // Should find match in text file only
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.matches[0].file_path, text_file);
 
-        // Should have error for binary file
-        assert_eq!(result.errors.len(), 1);
-        assert!(matches!(
-            result.errors[0],
-            SearchError::BinaryFileSkipped(_)
-        ));
+        // Binary file is silently skipped by GrepMatcher (no error, no matches)
+        assert_eq!(result.errors.len(), 0);
     }
 
     /// Test Searcher handles nonexistent files
@@ -290,7 +277,6 @@ mod tests {
         let config = SearchConfig {
             pattern: "test".to_string(),
             root_path: PathBuf::from("/"),
-            context_lines: 0,
             respect_gitignore: false,
         };
 
@@ -321,7 +307,6 @@ mod tests {
         let config = SearchConfig {
             pattern: "nonexistent".to_string(),
             root_path: PathBuf::from("/test"),
-            context_lines: 0,
             respect_gitignore: false,
         };
 
@@ -340,13 +325,12 @@ mod tests {
         let content = "line 1\nline 2\nMATCH here\nline 4\nline 5\nline 6";
         fs.add_file(&file, content).unwrap();
 
-        let matcher = GrepMatcher::compile("MATCH").unwrap();
+        let matcher = GrepMatcher::compile("MATCH").unwrap().with_context(2);
         let walker = SimpleWalker::new(vec![file.clone()]);
 
         let config = SearchConfig {
             pattern: "MATCH".to_string(),
             root_path: PathBuf::from("/test"),
-            context_lines: 2, // Request 2 lines of context
             respect_gitignore: false,
         };
 

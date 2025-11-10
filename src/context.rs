@@ -87,7 +87,12 @@ pub fn add_context_to_match<FS: FileSystem>(
     mut match_result: MatchResult,
     context_lines: usize,
 ) -> MatchResult {
-    match extract_context(fs, &match_result.file_path, match_result.line_number, context_lines) {
+    match extract_context(
+        fs,
+        &match_result.file_path,
+        match_result.line_number,
+        context_lines,
+    ) {
         Ok((context_before, context_after)) => {
             match_result.context_before = context_before;
             match_result.context_after = context_after;

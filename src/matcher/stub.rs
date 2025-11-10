@@ -6,7 +6,6 @@
 
 use super::{MatchInfo, Matcher};
 use std::{
-    any::Any,
     path::Path,
     sync::{Arc, Mutex},
 };

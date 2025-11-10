@@ -77,7 +77,6 @@ mod sink {
                 Err(err) => return Err(io::Error::error_message(err)),
             };
 
-
             match mat.kind() {
                 grep::searcher::SinkContextKind::Before => {
                     self.1.push_str(matched);
@@ -245,5 +244,44 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err();
         assert!(err_msg.contains("Invalid regex pattern"));
+    }
+
+    #[test]
+    fn test_grep_matcher_with_context() {
+        let matcher = GrepMatcher::compile("MATCH").unwrap().with_context(3);
+
+        // Create content with a match on line 5
+        let content =
+            "line 1\nline 2\nline 3\nline 4\nMATCH line 5\nline 6\nline 7\nline 8\nline 9";
+
+        let matches = matcher.search_in_content(content);
+
+        assert_eq!(matches.len(), 1, "Should find exactly one match");
+
+        let m = &matches[0];
+        assert_eq!(m.line_num, 5, "Match should be on line 5");
+        assert_eq!(m.line_content, "MATCH line 5");
+
+        // Check context before (lines 2, 3, 4)
+        let before_lines: Vec<&str> = m.previous_lines.lines().collect();
+        println!("Context before: {:?}", before_lines);
+        println!("previous_lines raw: {:?}", m.previous_lines);
+        assert_eq!(
+            before_lines.len(),
+            3,
+            "Should have 3 lines of context before"
+        );
+        assert_eq!(before_lines[0], "line 2");
+        assert_eq!(before_lines[1], "line 3");
+        assert_eq!(before_lines[2], "line 4");
+
+        // Check context after (lines 6, 7, 8)
+        let after_lines: Vec<&str> = m.next_lines.lines().collect();
+        println!("Context after: {:?}", after_lines);
+        println!("next_lines raw: {:?}", m.next_lines);
+        assert_eq!(after_lines.len(), 3, "Should have 3 lines of context after");
+        assert_eq!(after_lines[0], "line 6");
+        assert_eq!(after_lines[1], "line 7");
+        assert_eq!(after_lines[2], "line 8");
     }
 }

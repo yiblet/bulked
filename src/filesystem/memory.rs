@@ -99,16 +99,6 @@ impl FileSystem for MemoryFS {
         self.exists(path)
     }
 
-    fn is_binary(&self, path: &Path) -> bool {
-        if let Ok(files) = self.files.read() {
-            if let Some(bytes) = files.get(path) {
-                // Check for null bytes or invalid UTF-8
-                return bytes.contains(&0) || String::from_utf8(bytes.clone()).is_err();
-            }
-        }
-        false
-    }
-
     fn read_line_at(&self, path: &Path, line_number: usize) -> Result<String, String> {
         if line_number == 0 {
             return Err("Line numbers are 1-indexed".to_string());
@@ -188,20 +178,6 @@ mod tests {
 
         assert!(!fs.exists(&path));
         assert!(fs.read_to_string(&path).is_err());
-    }
-
-    #[test]
-    fn test_memory_fs_binary_detection() {
-        let fs = MemoryFS::new();
-        let text_path = PathBuf::from("/text.txt");
-        let binary_path = PathBuf::from("/binary.bin");
-
-        fs.add_file(&text_path, "normal text").unwrap();
-        fs.add_file_bytes(&binary_path, &[0xFF, 0xFE, 0x00, 0x01])
-            .unwrap();
-
-        assert!(!fs.is_binary(&text_path));
-        assert!(fs.is_binary(&binary_path));
     }
 
     #[test]

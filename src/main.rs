@@ -1,8 +1,8 @@
 // Phase 3: Full CLI interface with clap
 
 use bulked::filesystem::physical::PhysicalFS;
-use bulked::matcher::grep::GrepMatcher;
 use bulked::matcher::Matcher;
+use bulked::matcher::grep::GrepMatcher;
 use bulked::searcher::Searcher;
 use bulked::types::SearchConfig;
 use bulked::walker::ignore_walker::IgnoreWalker;
@@ -55,7 +55,7 @@ fn main() {
     let fs = PhysicalFS::new();
 
     let matcher = match GrepMatcher::compile(&cli.pattern) {
-        Ok(m) => m,
+        Ok(m) => m.with_context(cli.context),
         Err(e) => {
             eprintln!("Error: {}", e);
             std::process::exit(1);
@@ -67,7 +67,6 @@ fn main() {
     let config = SearchConfig {
         pattern: cli.pattern.clone(),
         root_path: cli.path.clone(),
-        context_lines: cli.context,
         respect_gitignore: !cli.no_ignore,
     };
 
@@ -99,7 +98,10 @@ fn main() {
     }
 
     if !result.errors.is_empty() {
-        eprintln!("{} errors encountered (use --verbose for details)", result.errors.len());
+        eprintln!(
+            "{} errors encountered (use --verbose for details)",
+            result.errors.len()
+        );
     }
 
     // Exit with appropriate code

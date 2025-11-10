@@ -27,14 +27,13 @@
 //!
 //! // Create production adapters
 //! let fs = PhysicalFS::new();
-//! let matcher = GrepMatcher::compile("pattern").unwrap();
+//! let matcher = GrepMatcher::compile("pattern").unwrap().with_context(20);
 //! let walker = IgnoreWalker::new(".", true);
 //!
 //! // Configure search
 //! let config = SearchConfig {
 //!     pattern: "pattern".to_string(),
 //!     root_path: PathBuf::from("."),
-//!     context_lines: 20,
 //!     respect_gitignore: true,
 //! };
 //!
@@ -59,8 +58,8 @@ pub use types::{MatchResult, SearchConfig, SearchError, SearchResult};
 mod integration_tests {
     use super::*;
     use crate::filesystem::memory::MemoryFS;
-    use crate::matcher::grep::GrepMatcher;
     use crate::matcher::Matcher; // Import the trait
+    use crate::matcher::grep::GrepMatcher;
     use crate::searcher::Searcher;
     use crate::walker::simple::SimpleWalker;
     use std::path::PathBuf;
@@ -102,7 +101,6 @@ mod integration_tests {
         let config = SearchConfig {
             pattern: "fn ".to_string(),
             root_path: PathBuf::from("/project"),
-            context_lines: 0,
             respect_gitignore: true,
         };
 
@@ -169,8 +167,8 @@ mod integration_tests {
         fs.add_file(&PathBuf::from("/project/ignored.log"), "TARGET ignored")
             .unwrap();
 
-        // Use real GrepMatcher
-        let matcher = GrepMatcher::compile("TARGET").unwrap();
+        // Use real GrepMatcher with context
+        let matcher = GrepMatcher::compile("TARGET").unwrap().with_context(20);
 
         // Use SimpleWalker (simulating gitignore filtering)
         let walker = SimpleWalker::new(vec![
@@ -182,7 +180,6 @@ mod integration_tests {
         let config = SearchConfig {
             pattern: "TARGET".to_string(),
             root_path: PathBuf::from("/project"),
-            context_lines: 20,
             respect_gitignore: true,
         };
 

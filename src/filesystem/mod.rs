@@ -9,7 +9,7 @@ pub mod physical;
 
 use std::{
     borrow::Cow,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 /// Abstract filesystem interface
@@ -30,9 +30,6 @@ pub trait FileSystem: Send + Sync {
 
     /// Check if a path points to a file (not a directory)
     fn is_file(&self, path: &Path) -> bool;
-
-    /// Check if a file appears to be binary (contains non-UTF8 or null bytes)
-    fn is_binary(&self, path: &Path) -> bool;
 
     /// Read a specific line from a file (1-indexed)
     ///
@@ -91,21 +88,4 @@ mod tests {
         test_filesystem_contract(fs, &test_path, test_content);
     }
 
-    #[test]
-    fn test_memory_fs_binary_detection() {
-        let fs = MemoryFS::new();
-        let binary_path = PathBuf::from("/test/binary.bin");
-        let text_path = PathBuf::from("/test/text.txt");
-
-        // Add binary file (contains null bytes)
-        fs.add_file(&binary_path, "binary\0data").unwrap();
-        // Add text file
-        fs.add_file(&text_path, "normal text").unwrap();
-
-        assert!(fs.is_binary(&binary_path), "Should detect binary file");
-        assert!(
-            !fs.is_binary(&text_path),
-            "Should not detect text as binary"
-        );
-    }
 }

@@ -36,26 +36,6 @@ impl FileSystem for PhysicalFS {
         path.is_file()
     }
 
-    fn is_binary(&self, path: &Path) -> bool {
-        // Read first 8KB and check for null bytes or invalid UTF-8
-        // This matches common approaches used by grep tools
-        match fs::read(path) {
-            Ok(bytes) => {
-                let check_len = bytes.len().min(8192);
-                let sample = &bytes[..check_len];
-
-                // Check for null bytes
-                if sample.contains(&0) {
-                    return true;
-                }
-
-                // Check if valid UTF-8
-                String::from_utf8(sample.to_vec()).is_err()
-            }
-            Err(_) => false, // If can't read, assume not binary
-        }
-    }
-
     fn read_line_at(&self, path: &Path, line_number: usize) -> Result<String, String> {
         if line_number == 0 {
             return Err("Line numbers are 1-indexed".to_string());

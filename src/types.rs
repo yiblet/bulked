@@ -32,25 +32,25 @@ impl MatchResult {
             line_content: match_info.line_content,
             byte_offset: match_info.byte_offset,
             context_before: {
-                let count = match_info.previous_lines.split("\n").count();
-                match_info
-                    .previous_lines
-                    .split("\n")
+                let lines: Vec<&str> = match_info.previous_lines.lines().collect();
+                let count = lines.len();
+                lines
+                    .into_iter()
                     .enumerate()
-                    .map(|line| ContextLine {
-                        line_number: match_info.line_num - count + line.0,
-                        content: line.1.to_string(),
+                    .map(|(idx, line)| ContextLine {
+                        line_number: match_info.line_num - count + idx,
+                        content: line.to_string(),
                     })
                     .collect()
             },
             context_after: {
                 match_info
-                    .previous_lines
-                    .split("\n")
+                    .next_lines
+                    .lines()
                     .enumerate()
-                    .map(|line| ContextLine {
-                        line_number: match_info.line_num + line.0,
-                        content: line.1.to_string(),
+                    .map(|(idx, line)| ContextLine {
+                        line_number: match_info.line_num + idx + 1,
+                        content: line.to_string(),
                     })
                     .collect()
             },
@@ -72,8 +72,6 @@ pub struct ContextLine {
 pub enum SearchError {
     /// Failed to read a file
     FileReadError { path: PathBuf, error: String },
-    /// Skipped a binary file
-    BinaryFileSkipped(PathBuf),
     /// Invalid regex pattern
     PatternError(String),
 }
@@ -85,8 +83,6 @@ pub struct SearchConfig {
     pub pattern: String,
     /// Root directory or file to search
     pub root_path: PathBuf,
-    /// Number of context lines to show before and after each match
-    pub context_lines: usize,
     /// Whether to respect .gitignore files
     pub respect_gitignore: bool,
 }
