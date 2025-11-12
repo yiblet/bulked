@@ -39,14 +39,14 @@ pub fn chunks_are_all_for_same_path(chunks: &[Chunk]) -> Result<(), ApplyError> 
 
     if !chunks.iter().all(|c| c.path == first.path) {
         return Err(ApplyError::MixedPaths);
-    };
+    }
     Ok(())
 }
 
 pub fn chunks_have_valid_line_numbers(chunks: &[Chunk]) -> Result<(), ApplyError> {
     if !chunks.iter().all(|c| c.start_line >= 1) {
         return Err(ApplyError::InvalidLineNumber);
-    };
+    }
     Ok(())
 }
 
@@ -56,7 +56,7 @@ pub fn chunks_are_sorted_by_line_number(chunks: &[Chunk]) -> Result<(), ApplyErr
         .all(|w| w[0].start_line <= w[1].start_line)
     {
         return Err(ApplyError::InvalidLineNumber);
-    };
+    }
     Ok(())
 }
 
@@ -110,7 +110,7 @@ fn segments_from_chunks<'a>(
                 let skip_bytes: usize = content
                     .split_inclusive('\n')
                     .take(cur.num_lines)
-                    .map(|l| l.len())
+                    .map(str::len)
                     .sum();
 
                 content = &content[skip_bytes..];
@@ -118,19 +118,18 @@ fn segments_from_chunks<'a>(
                 chunks = next;
 
                 return Some(Segment::Chunk(cur));
-            } else {
-                let next = content
-                    .split_inclusive('\n')
-                    .take(line_diff)
-                    .map(|l| l.len())
-                    .sum();
-                let (to_yield, new_content) = content.split_at(next);
-
-                line = cur.start_line;
-                content = new_content;
-
-                return Some(Segment::Content(to_yield));
             }
+            let next = content
+                .split_inclusive('\n')
+                .take(line_diff)
+                .map(str::len)
+                .sum();
+            let (to_yield, new_content) = content.split_at(next);
+
+            line = cur.start_line;
+            content = new_content;
+
+            return Some(Segment::Content(to_yield));
         }
 
         if content.is_empty() {

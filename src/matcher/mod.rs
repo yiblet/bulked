@@ -27,8 +27,8 @@ pub struct MatchInfo {
 /// Abstract pattern matching interface
 ///
 /// This trait provides regex matching operations. Implementations can be
-/// backed by actual regex engines (GrepMatcher) or provide canned responses
-/// for testing (StubMatcher).
+/// backed by actual regex engines (`GrepMatcher`) or provide canned responses
+/// for testing (`StubMatcher`).
 pub trait Matcher: Send + Sync {
     /// Compile a pattern into a matcher
     ///
@@ -55,6 +55,7 @@ pub trait Matcher: Send + Sync {
 }
 
 #[cfg(test)]
+#[allow(clippy::similar_names)]
 mod tests {
     use super::*;
     use crate::matcher::grep::GrepMatcher;

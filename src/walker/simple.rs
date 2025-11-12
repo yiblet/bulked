@@ -1,6 +1,6 @@
 //! Simple walker implementation for testing
 //!
-//! This module provides SimpleWalker, a test double that returns a predefined
+//! This module provides `SimpleWalker`, a test double that returns a predefined
 //! list of files. This allows testing search logic without filesystem traversal.
 
 use super::Walker;

@@ -1,6 +1,6 @@
 //! Filesystem abstraction - the primary test seam
 //!
-//! This module defines the FileSystem trait which provides an abstraction over
+//! This module defines the `FileSystem` trait which provides an abstraction over
 //! filesystem operations. This allows the core search logic to be tested without
 //! touching the real filesystem.
 
@@ -12,8 +12,8 @@ use std::{borrow::Cow, path::Path};
 /// Abstract filesystem interface
 ///
 /// This trait provides the operations needed for searching files.
-/// Implementations can be backed by real filesystem (PhysicalFS) or
-/// in-memory storage (MemoryFS for testing).
+/// Implementations can be backed by real filesystem (`PhysicalFS`) or
+/// in-memory storage (`MemoryFS` for testing).
 pub trait FileSystem: Send + Sync {
     /// Read the entire contents of a file as a string
     ///
@@ -35,8 +35,9 @@ mod tests {
     use crate::filesystem::memory::MemoryFS;
     use std::path::PathBuf;
 
-    /// Contract test that verifies any FileSystem implementation
+    /// Contract test that verifies any `FileSystem` implementation
     /// satisfies the basic requirements
+    #[allow(clippy::needless_pass_by_value)] // Test helper, generics require ownership
     fn test_filesystem_contract<F: FileSystem>(fs: F, test_file: &Path, test_content: &str) {
         // Test exists
         assert!(fs.exists(test_file), "File should exist");

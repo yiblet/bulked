@@ -4,6 +4,7 @@
 //! They have no dependencies on filesystem, network, or other I/O.
 
 use std::path::PathBuf;
+use thiserror::Error;
 
 use crate::matcher::MatchInfo;
 
@@ -25,6 +26,7 @@ pub struct MatchResult {
 }
 
 impl MatchResult {
+    #[must_use]
     pub fn from_match_info(match_info: MatchInfo, path: PathBuf) -> Self {
         Self {
             file_path: path,
@@ -68,12 +70,26 @@ pub struct ContextLine {
 }
 
 /// Errors that can occur during searching
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SearchError {
     /// Failed to read a file
+    #[error("Failed to read {path}: {error}")]
     FileReadError { path: PathBuf, error: String },
-    /// Invalid regex pattern
-    PatternError(String),
+
+    /// Multiple errors occurred during search
+    #[error("{} errors occurred during search", .0.len())]
+    Multiple(Vec<SearchError>),
+}
+
+impl SearchError {
+    /// Create a multiple error from a vector of errors
+    pub fn from_errors(errors: Vec<SearchError>) -> Self {
+        match errors.len() {
+            0 => panic!("Cannot create SearchError::Multiple from empty vector"),
+            1 => errors.into_iter().next().unwrap(),
+            _ => SearchError::Multiple(errors),
+        }
+    }
 }
 
 /// Result of a search operation
@@ -81,27 +97,20 @@ pub enum SearchError {
 pub struct SearchResult {
     /// All matches found
     pub matches: Vec<MatchResult>,
-    /// Errors encountered during search
-    pub errors: Vec<SearchError>,
 }
 
 impl SearchResult {
     /// Create a new empty search result
+    #[must_use]
     pub fn new() -> Self {
         Self {
             matches: Vec::new(),
-            errors: Vec::new(),
         }
     }
 
     /// Add a match to the result
     pub fn add_match(&mut self, match_result: MatchResult) {
         self.matches.push(match_result);
-    }
-
-    /// Add an error to the result
-    pub fn add_error(&mut self, error: SearchError) {
-        self.errors.push(error);
     }
 }
 
@@ -112,6 +121,7 @@ impl Default for SearchResult {
 }
 
 #[cfg(test)]
+#[allow(clippy::similar_names)]
 mod tests {
     use super::*;
 
@@ -119,7 +129,6 @@ mod tests {
     fn test_search_result_new() {
         let result = SearchResult::new();
         assert!(result.matches.is_empty());
-        assert!(result.errors.is_empty());
     }
 
     #[test]
@@ -139,11 +148,29 @@ mod tests {
     }
 
     #[test]
-    fn test_search_result_add_error() {
-        let mut result = SearchResult::new();
-        let error = SearchError::PatternError("invalid pattern".to_string());
-        result.add_error(error.clone());
-        assert_eq!(result.errors.len(), 1);
-        assert_eq!(result.errors[0], error);
+    fn test_search_error_from_errors() {
+        let error1 = SearchError::FileReadError {
+            path: PathBuf::from("/test1"),
+            error: "error1".to_string(),
+        };
+        let error2 = SearchError::FileReadError {
+            path: PathBuf::from("/test2"),
+            error: "error2".to_string(),
+        };
+
+        // Single error should unwrap
+        let single = SearchError::from_errors(vec![error1.clone()]);
+        assert_eq!(single, error1);
+
+        // Multiple errors should wrap
+        let multiple = SearchError::from_errors(vec![error1.clone(), error2.clone()]);
+        match multiple {
+            SearchError::Multiple(errors) => {
+                assert_eq!(errors.len(), 2);
+                assert_eq!(errors[0], error1);
+                assert_eq!(errors[1], error2);
+            }
+            SearchError::FileReadError { .. } => panic!("Expected Multiple variant"),
+        }
     }
 }

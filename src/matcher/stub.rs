@@ -1,6 +1,6 @@
 //! Stub matcher implementation for testing
 //!
-//! This module provides StubMatcher, a test double that returns predefined
+//! This module provides `StubMatcher`, a test double that returns predefined
 //! match results. This allows testing search logic without depending on
 //! regex engine behavior.
 
@@ -30,14 +30,14 @@ impl StubMatcher {
         }
     }
 
-    /// Add a predefined match that will be returned by search_in_content
+    /// Add a predefined match that will be returned by `search_in_content`
     pub fn add_match(&mut self, match_info: MatchInfo) {
         if let Ok(mut matches) = self.matches.lock() {
             matches.push(match_info);
         }
     }
 
-    /// Set a predicate function for is_match
+    /// Set a predicate function for `is_match`
     pub fn set_predicate<F>(&mut self, predicate: F)
     where
         F: Fn(&str) -> bool + Send + Sync + 'static,
@@ -102,6 +102,7 @@ impl Matcher for StubMatcher {
 }
 
 #[cfg(test)]
+#[allow(clippy::similar_names)]
 mod tests {
     use super::*;
 

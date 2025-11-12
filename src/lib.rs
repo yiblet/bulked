@@ -12,7 +12,7 @@
 //!     .with_context_lines(5)
 //!     .with_respect_gitignore(true);
 //!
-//! match execute(config) {
+//! match execute(&config) {
 //!     Ok(result) => {
 //!         for m in &result.matches {
 //!             println!("{}:{} - {}", m.file_path.display(), m.line_number, m.line_content);
@@ -47,7 +47,7 @@ mod integration_tests {
     use crate::walker::simple::SimpleWalker;
     use std::path::PathBuf;
 
-    /// Full-stack integration test with MemoryFS
+    /// Full-stack integration test with `MemoryFS`
     ///
     /// This tests the entire search pipeline with real implementations
     /// (except filesystem) to verify they work together correctly.
@@ -82,19 +82,19 @@ mod integration_tests {
         ]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let result = searcher.search_all();
+        let result = searcher.search_all().unwrap();
 
         // Should find "fn " in both .rs files
         assert!(result.matches.len() >= 2, "Should find at least 2 matches");
-        assert_eq!(result.errors.len(), 0, "Should have no errors");
 
         // Verify matches are from .rs files
         for m in &result.matches {
-            let path_str = m.file_path.to_str().unwrap();
             assert!(
-                path_str.ends_with(".rs"),
+                m.file_path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("rs")),
                 "Match should be from .rs file, got: {}",
-                path_str
+                m.file_path.display()
             );
         }
     }
@@ -107,7 +107,7 @@ mod integration_tests {
     /// - Line numbers are accurate
     /// - Gitignored files are excluded by default
     ///
-    /// Uses virtual filesystem (MemoryFS) for hermetic testing.
+    /// Uses virtual filesystem (`MemoryFS`) for hermetic testing.
     #[test]
     fn test_bulked_search_with_context() {
         // Create test directory with realistic structure
@@ -123,7 +123,7 @@ mod integration_tests {
             if i == 25 {
                 file1_lines.push("TARGET match on line 25".to_string());
             } else {
-                file1_lines.push(format!("line {}", i));
+                file1_lines.push(format!("line {i}"));
             }
         }
         fs.add_file(
@@ -155,7 +155,7 @@ mod integration_tests {
         ]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let result = searcher.search_all();
+        let result = searcher.search_all().unwrap();
 
         // Verify correct number of matches (2 matches in non-ignored files)
         assert_eq!(
@@ -163,7 +163,6 @@ mod integration_tests {
             2,
             "Should find exactly 2 matches in non-ignored files"
         );
-        assert_eq!(result.errors.len(), 0, "Should have no errors");
 
         // Verify first match (file1.txt, line 25 with full context)
         let match1 = result

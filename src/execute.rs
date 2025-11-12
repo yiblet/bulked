@@ -1,7 +1,7 @@
 //! High-level search execution with production adapters
 //!
 //! This module provides a convenient API for executing searches with sensible
-//! defaults and production implementations (PhysicalFS, GrepMatcher, IgnoreWalker).
+//! defaults and production implementations (`PhysicalFS`, `GrepMatcher`, `IgnoreWalker`).
 
 use crate::filesystem::physical::PhysicalFS;
 use crate::matcher::Matcher;
@@ -39,19 +39,21 @@ impl ExecuteConfig {
     }
 
     /// Set the number of context lines (default: 20)
+    #[must_use]
     pub fn with_context_lines(mut self, lines: usize) -> Self {
         self.context_lines = lines;
         self
     }
 
     /// Set whether to respect gitignore files (default: true)
+    #[must_use]
     pub fn with_respect_gitignore(mut self, respect: bool) -> Self {
         self.respect_gitignore = respect;
         self
     }
 }
 
-/// Execute a search with production adapters (PhysicalFS, GrepMatcher, IgnoreWalker)
+/// Execute a search with production adapters (`PhysicalFS`, `GrepMatcher`, `IgnoreWalker`)
 ///
 /// This is the main entry point for running a search with real filesystem access.
 ///
@@ -61,8 +63,14 @@ impl ExecuteConfig {
 ///
 /// # Returns
 ///
-/// * `Ok(SearchResult)` - Results containing matches and any errors encountered
-/// * `Err(String)` - Fatal error (e.g., invalid regex pattern)
+/// * `Ok(SearchResult)` - Results containing all matches found
+/// * `Err(String)` - Error message describing what went wrong
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The regex pattern is invalid
+/// - File read errors occur during search (wrapped in `SearchError::Multiple` if multiple files fail)
 ///
 /// # Example
 ///
@@ -73,7 +81,7 @@ impl ExecuteConfig {
 ///     .with_context_lines(5)
 ///     .with_respect_gitignore(true);
 ///
-/// match execute(config) {
+/// match execute(&config) {
 ///     Ok(result) => {
 ///         println!("Found {} matches", result.matches.len());
 ///     }
@@ -82,7 +90,7 @@ impl ExecuteConfig {
 ///     }
 /// }
 /// ```
-pub fn execute(config: ExecuteConfig) -> Result<SearchResult, String> {
+pub fn execute(config: &ExecuteConfig) -> Result<SearchResult, String> {
     // Create production adapters
     let fs = PhysicalFS::new();
 
@@ -92,7 +100,9 @@ pub fn execute(config: ExecuteConfig) -> Result<SearchResult, String> {
 
     // Execute search
     let searcher = Searcher::new(fs, matcher, walker);
-    Ok(searcher.search_all())
+
+    // FIXME: why are we mapping errors and serializing this? seems like a bad call to do that.
+    searcher.search_all().map_err(|e| format!("{e:?}"))
 }
 
 #[cfg(test)]
@@ -134,7 +144,7 @@ mod tests {
 
         // Execute search using Searcher directly
         let searcher = Searcher::new(fs, matcher, walker);
-        let result = searcher.search_all();
+        let result = searcher.search_all().unwrap();
 
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.matches[0].line_number, 2);
@@ -144,7 +154,7 @@ mod tests {
     #[test]
     fn test_execute_with_invalid_pattern() {
         let config = ExecuteConfig::new("[invalid", ".");
-        let result = execute(config);
+        let result = execute(&config);
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid regex pattern"));

@@ -129,10 +129,12 @@ pub struct Format(pub Vec<Chunk>);
 
 impl Format {
     /// Returns the number of chunks in the format.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -156,9 +158,8 @@ impl Format {
 
         for chunk in chunks {
             match current.merge(chunk) {
-                Ok(_) => {
+                Ok(()) => {
                     // Merge succeeded, current is now updated in-place
-                    continue;
                 }
                 Err(chunk) => {
                     // Merge failed, push current and start new one
@@ -173,6 +174,7 @@ impl Format {
         self.0 = result;
     }
 
+    #[must_use]
     pub fn chunks(&self) -> BTreeMap<ChunkRef<'_>, &Chunk> {
         self.0
             .iter()
@@ -208,6 +210,7 @@ pub struct Chunk {
 
 impl Chunk {
     /// Creates a new Chunk with the given path, start line, number of lines, and content.
+    #[must_use]
     pub fn new(path: PathBuf, start_line: usize, num_lines: usize, content: String) -> Self {
         Self {
             path,
@@ -217,6 +220,7 @@ impl Chunk {
         }
     }
 
+    #[must_use]
     pub fn as_ref(&self) -> ChunkRef<'_> {
         ChunkRef {
             path: self.path.as_path(),
@@ -229,6 +233,7 @@ impl Chunk {
     /// Two chunks can be merged if they have the same path and are either:
     /// - Sequential (no gaps between them)
     /// - Overlapping
+    #[must_use]
     pub fn can_merge(&self, other: &Chunk) -> bool {
         if self.path != other.path {
             return false;
@@ -250,7 +255,9 @@ impl Chunk {
     /// For overlapping chunks, the merge keeps all unique lines from both chunks,
     /// with the earlier chunk's content taking precedence for the overlapping region.
     ///
-    /// Returns Ok(()) on success, or Err(other) if the chunks cannot be merged.
+    /// # Errors
+    ///
+    /// Returns `Err(other)` if the chunks cannot be merged (different paths or non-overlapping/non-adjacent).
     pub fn merge(&mut self, other: Chunk) -> Result<(), Chunk> {
         if !self.can_merge(&other) {
             return Err(other);

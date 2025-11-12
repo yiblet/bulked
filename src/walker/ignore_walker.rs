@@ -1,6 +1,6 @@
 //! Production walker using ignore crate
 //!
-//! This module provides IgnoreWalker, which uses the ignore crate to traverse
+//! This module provides `IgnoreWalker`, which uses the ignore crate to traverse
 //! directories while respecting .gitignore files. This is the production
 //! implementation based on the same infrastructure used by ripgrep and Helix.
 
@@ -43,8 +43,8 @@ impl Walker for IgnoreWalker {
 
         Box::new(
             walker
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| entry.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+                .filter_map(std::result::Result::ok)
+                .filter(|entry| entry.file_type().is_some_and(|ft| ft.is_file()))
                 .map(|entry| entry.path().to_path_buf()),
         )
     }

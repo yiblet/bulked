@@ -1,6 +1,6 @@
 //! In-memory filesystem implementation for testing
 //!
-//! This module provides MemoryFS, a fake filesystem that stores all data in memory.
+//! This module provides `MemoryFS`, a fake filesystem that stores all data in memory.
 //! It's used for hermetic testing without touching the real filesystem.
 
 use super::FileSystem;
@@ -39,7 +39,7 @@ impl MemoryFS {
         let mut files = self
             .files
             .write()
-            .map_err(|e| format!("Lock error: {}", e))?;
+            .map_err(|e| format!("Lock error: {e}"))?;
         files.insert(path.to_path_buf(), content.to_vec());
         Ok(())
     }
@@ -49,7 +49,7 @@ impl MemoryFS {
         let mut files = self
             .files
             .write()
-            .map_err(|e| format!("Lock error: {}", e))?;
+            .map_err(|e| format!("Lock error: {e}"))?;
         files
             .remove(path)
             .ok_or_else(|| format!("File not found: {}", path.display()))?;
@@ -79,7 +79,7 @@ impl FileSystem for MemoryFS {
         let files = self
             .files
             .read()
-            .map_err(|e| format!("Lock error: {}", e))?;
+            .map_err(|e| format!("Lock error: {e}"))?;
 
         let bytes = files
             .get(path)

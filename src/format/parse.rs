@@ -12,7 +12,7 @@ use nom::{
 };
 use std::path::PathBuf;
 
-/// Custom nom error type that carries context for generating FormatError
+/// Custom nom error type that carries context for generating `FormatError`
 #[derive(Debug, Clone)]
 pub(super) struct ParserError {
     pub(super) kind: ParserErrorKind,
@@ -63,8 +63,7 @@ impl ParserError {
             ParserErrorKind::InvalidDelimiter { offset } => {
                 let end = source[offset..]
                     .find('\n')
-                    .map(|i| offset + i)
-                    .unwrap_or(source.len());
+                    .map_or(source.len(), |i| offset + i);
                 FormatError::InvalidDelimiter {
                     src,
                     span: (offset, end - offset).into(),
@@ -129,7 +128,7 @@ where
 pub fn parse_format(src: &str) -> Result<Format, FormatError> {
     let full_len = src.len();
     // Skip leading whitespace/comments
-    let (input, _) = skip_whitespace_and_comments(src).map_err(|e| match e {
+    let (input, ()) = skip_whitespace_and_comments(src).map_err(|e| match e {
         nom::Err::Error(e) | nom::Err::Failure(e) => e.into_format_error(src),
         nom::Err::Incomplete(_) => FormatError::NoChunks {
             src: src.to_string(),
@@ -161,14 +160,14 @@ pub fn parse_format(src: &str) -> Result<Format, FormatError> {
 fn chunk_parser<'a>(full_len: usize) -> impl Fn(&'a str) -> ParseResult<'a, Chunk> {
     move |input| {
         let start_offset = offset_from_len(full_len, input);
-        let header_len = input.lines().next().map(|l| l.len()).unwrap_or(0);
+        let header_len = input.lines().next().map_or(0, str::len);
 
         let (input, (path, line_number, numlines)) =
             start_delimiter(full_len, start_offset)(input)?;
 
         let (input, content) = chunk_content(start_offset, header_len)(input)?;
 
-        let (input, _) = parse_end_delimiter_nom(input)?;
+        let (input, ()) = parse_end_delimiter_nom(input)?;
 
         let unescaped_content = unescape_content(&content);
         Ok((
@@ -259,7 +258,7 @@ fn chunk_content<'a>(
 
 /// Parse end delimiter: @@@
 /// Allows any text after @@@ until the end of the line (which is ignored).
-fn parse_end_delimiter_nom<'a>(input: &'a str) -> ParseResult<'a, ()> {
+fn parse_end_delimiter_nom(input: &str) -> ParseResult<'_, ()> {
     let (input, _) = tag("@@@")(input)?;
     // Allow optional text after @@@ until end of line
     let (input, _) = nom::combinator::opt(not_line_ending)(input)?;
@@ -268,7 +267,7 @@ fn parse_end_delimiter_nom<'a>(input: &'a str) -> ParseResult<'a, ()> {
 }
 
 /// Skip whitespace and comment lines
-fn skip_whitespace_and_comments<'a>(input: &'a str) -> ParseResult<'a, ()> {
+fn skip_whitespace_and_comments(input: &str) -> ParseResult<'_, ()> {
     let (input, _) = many0(alt((
         // Skip whitespace lines (line with only whitespace)
         recognize(tuple((space0, line_ending))),
@@ -306,14 +305,14 @@ mod tests {
 
     #[test]
     fn test_format_from_str_multiple_chunks() {
-        let input = r#"@test.txt:5:1
+        let input = r"@test.txt:5:1
 line 5
 @@@
 
 @test.txt:10:1
 line 10
 @@@
-"#;
+";
 
         let format = Format::from_str(input).unwrap();
         assert_eq!(format.0.len(), 2);
@@ -329,7 +328,7 @@ line 10
 
     #[test]
     fn test_format_from_str_with_comments() {
-        let input = r#"This is a comment at the start
+        let input = r"This is a comment at the start
 
 @test.txt:1:1
 content
@@ -340,7 +339,7 @@ This is a comment between chunks
 @test.txt:5:1
 more content
 @@@
-"#;
+";
 
         let format = Format::from_str(input).unwrap();
         assert_eq!(format.0.len(), 2);
@@ -413,7 +412,7 @@ more content
     }
 
     /// This test demonstrates the beautiful error messages from miette.
-    /// Run with: cargo test test_format_error_display -- --nocapture
+    /// Run with: cargo test `test_format_error_display` -- --nocapture
     #[test]
     fn test_format_error_display() {
         use miette::Report;
@@ -428,12 +427,12 @@ more content
         ];
 
         for (name, input) in test_cases {
-            println!("\n=== Test case: {} ===", name);
+            println!("\n=== Test case: {name} ===");
             match Format::from_str(input) {
                 Ok(_) => println!("Unexpectedly succeeded!"),
                 Err(e) => {
                     let report = Report::new(e);
-                    println!("{:?}", report);
+                    println!("{report:?}");
                 }
             }
         }
@@ -451,14 +450,14 @@ more content
 
     #[test]
     fn test_format_from_str_multiple_chunks_with_trailing_text() {
-        let input = r#"@test.txt:5:1
+        let input = r"@test.txt:5:1
 line 5
 @@@ comment here
 
 @test.txt:10:1
 line 10
 @@@ another comment
-"#;
+";
 
         let format = Format::from_str(input).unwrap();
         assert_eq!(format.0.len(), 2);

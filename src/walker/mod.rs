@@ -12,8 +12,8 @@ use std::path::PathBuf;
 /// Abstract directory walker interface
 ///
 /// This trait provides directory traversal operations. Implementations can be
-/// backed by actual filesystem walkers (IgnoreWalker with .gitignore support)
-/// or provide controlled file lists for testing (SimpleWalker).
+/// backed by actual filesystem walkers (`IgnoreWalker` with .gitignore support)
+/// or provide controlled file lists for testing (`SimpleWalker`).
 pub trait Walker: Send + Sync {
     /// Get an iterator over all files to search
     ///

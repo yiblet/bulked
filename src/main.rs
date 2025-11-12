@@ -51,10 +51,10 @@ fn main() {
         .with_context_lines(cli.context)
         .with_respect_gitignore(!cli.no_ignore);
 
-    let result = match execute(config) {
+    let result = match execute(&config) {
         Ok(result) => result,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             std::process::exit(1);
         }
     };
@@ -78,20 +78,9 @@ fn main() {
     }
 
     // Summary
-    if !result.matches.is_empty() {
+    if result.matches.is_empty() {
+        println!("\nNo matches found");
+    } else {
         println!("\nFound {} matches", result.matches.len());
-    }
-
-    if !result.errors.is_empty() {
-        eprintln!(
-            "{} errors encountered (use --verbose for details)",
-            result.errors.len()
-        );
-    }
-
-    // Exit with appropriate code
-    // Exit with error only if there were errors but no matches
-    if result.matches.is_empty() && !result.errors.is_empty() {
-        std::process::exit(1);
     }
 }

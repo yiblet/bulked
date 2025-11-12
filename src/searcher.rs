@@ -1,7 +1,7 @@
 //! Core search logic - functional core with no I/O dependencies
 //!
 //! This module provides the Searcher, which orchestrates the search operation
-//! using abstract dependencies (FileSystem, Matcher, Walker traits). This
+//! using abstract dependencies (`FileSystem`, Matcher, Walker traits). This
 //! implements the functional core of the hexagonal architecture.
 
 use crate::filesystem::FileSystem;
@@ -12,7 +12,7 @@ use std::path::Path;
 
 /// Core search orchestrator
 ///
-/// This struct is generic over the FileSystem, Matcher, and Walker traits.
+/// This struct is generic over the `FileSystem`, Matcher, and Walker traits.
 /// This allows it to work with any combination of implementations (real or test).
 pub struct Searcher<FS, M, W>
 where
@@ -42,7 +42,7 @@ where
 
     /// Search a single file for matches
     ///
-    /// Returns Ok with matches if successful, or Err with a SearchError if the file
+    /// Returns Ok with matches if successful, or Err with a `SearchError` if the file
     /// couldn't be searched.
     fn search_file(&self, path: &Path) -> Result<Vec<MatchResult>, SearchError> {
         // Check if file exists
@@ -105,8 +105,12 @@ where
     ///
     /// This is the main entry point for searching. It walks all files,
     /// searches each one, and collects results and errors.
-    pub fn search_all(&self) -> SearchResult {
+    ///
+    /// Returns `Ok(SearchResult)` with all matches if successful, or `Err(SearchError)`
+    /// if any errors occurred. If multiple files had errors, returns `SearchError::Multiple`.
+    pub fn search_all(&self) -> Result<SearchResult, SearchError> {
         let mut result = SearchResult::new();
+        let mut errors = Vec::new();
 
         for path in self.walker.files() {
             match self.search_file(&path) {
@@ -121,16 +125,20 @@ where
                         SearchError::FileReadError { path, error } => {
                             tracing::warn!("Error reading {}: {}", path.display(), error);
                         }
-                        SearchError::PatternError(e) => {
-                            tracing::error!("Pattern error: {}", e);
+                        SearchError::Multiple(_) => {
+                            tracing::error!("Multiple errors occurred");
                         }
                     }
-                    result.add_error(err);
+                    errors.push(err);
                 }
             }
         }
 
-        result
+        if errors.is_empty() {
+            Ok(result)
+        } else {
+            Err(SearchError::from_errors(errors))
+        }
     }
 }
 
@@ -168,11 +176,10 @@ mod tests {
         let searcher = Searcher::new(fs, stub_matcher, walker);
 
         // Execute search
-        let result = searcher.search_all();
+        let result = searcher.search_all().unwrap();
 
         // Assertions
         assert_eq!(result.matches.len(), 1);
-        assert_eq!(result.errors.len(), 0);
 
         let match_result = &result.matches[0];
         assert_eq!(match_result.file_path, test_path);
@@ -180,7 +187,7 @@ mod tests {
         assert_eq!(match_result.line_content, "TARGET line");
     }
 
-    /// Test Searcher with real GrepMatcher and MemoryFS (sociable integration test)
+    /// Test Searcher with real `GrepMatcher` and `MemoryFS` (sociable integration test)
     #[test]
     fn test_searcher_with_real_grep_matcher() {
         // Setup MemoryFS with multiple files
@@ -202,11 +209,10 @@ mod tests {
         let searcher = Searcher::new(fs, matcher, walker);
 
         // Execute search
-        let result = searcher.search_all();
+        let result = searcher.search_all().unwrap();
 
         // Should find "hello" in both files
         assert_eq!(result.matches.len(), 3); // main.rs line 2, lib.rs lines 1 and 2
-        assert_eq!(result.errors.len(), 0);
 
         // Check that matches are from both files
         let files_with_matches: std::collections::HashSet<_> =
@@ -216,7 +222,7 @@ mod tests {
     }
 
     /// Test Searcher handles binary files correctly
-    /// Binary files are now automatically skipped by GrepMatcher via BinaryDetection::quit
+    /// Binary files are now automatically skipped by `GrepMatcher` via `BinaryDetection::quit`
     #[test]
     fn test_searcher_skips_binary_files() {
         let fs = MemoryFS::new();
@@ -231,14 +237,13 @@ mod tests {
         let walker = SimpleWalker::new(vec![binary_file.clone(), text_file.clone()]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let result = searcher.search_all();
+        let result = searcher.search_all().unwrap();
 
         // Should find match in text file only
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.matches[0].file_path, text_file);
 
         // Binary file is silently skipped by GrepMatcher (no error, no matches)
-        assert_eq!(result.errors.len(), 0);
     }
 
     /// Test Searcher handles nonexistent files
@@ -253,15 +258,14 @@ mod tests {
         let searcher = Searcher::new(fs, matcher, walker);
         let result = searcher.search_all();
 
-        // Should have no matches
-        assert_eq!(result.matches.len(), 0);
-
-        // Should have error for nonexistent file
-        assert_eq!(result.errors.len(), 1);
-        assert!(matches!(
-            result.errors[0],
-            SearchError::FileReadError { .. }
-        ));
+        // Should return an error for nonexistent file
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SearchError::FileReadError { .. } => {
+                // Expected single error
+            }
+            SearchError::Multiple(_) => panic!("Expected FileReadError"),
+        }
     }
 
     /// Test Searcher with no matches
@@ -275,10 +279,9 @@ mod tests {
         let walker = SimpleWalker::new(vec![file]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let result = searcher.search_all();
+        let result = searcher.search_all().unwrap();
 
         assert_eq!(result.matches.len(), 0);
-        assert_eq!(result.errors.len(), 0);
     }
 
     /// Test Searcher with context extraction (Phase 2)
@@ -293,7 +296,7 @@ mod tests {
         let walker = SimpleWalker::new(vec![file.clone()]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let result = searcher.search_all();
+        let result = searcher.search_all().unwrap();
 
         assert_eq!(result.matches.len(), 1);
         let m = &result.matches[0];

@@ -1,6 +1,6 @@
 //! Production pattern matcher using grep-regex
 //!
-//! This module provides GrepMatcher, which uses the grep-regex and grep-searcher
+//! This module provides `GrepMatcher`, which uses the grep-regex and grep-searcher
 //! crates to perform fast regex matching. This is the production implementation
 //! based on the same infrastructure used by ripgrep and Helix.
 
@@ -34,7 +34,7 @@ mod sink {
         }
     }
 
-    impl<'a> Sink for UTF8<'a> {
+    impl Sink for UTF8<'_> {
         type Error = io::Error;
 
         fn matched(
@@ -46,17 +46,15 @@ mod sink {
                 Ok(matched) => matched,
                 Err(err) => return Err(io::Error::error_message(err)),
             };
-            let line_number = match mat.line_number() {
-                Some(line_number) => line_number,
-                None => {
-                    let msg = "line numbers not enabled";
-                    return Err(io::Error::error_message(msg));
-                }
+            let Some(line_number) = mat.line_number() else {
+                let msg = "line numbers not enabled";
+                return Err(io::Error::error_message(msg));
             };
 
             let byte_offset = mat.absolute_byte_offset();
 
             let prev = std::mem::take(&mut self.1);
+            #[allow(clippy::cast_possible_truncation)] // Line numbers in practice fit in usize
             self.0.push(MatchInfo {
                 line_num: line_number as usize,
                 byte_offset: byte_offset as usize,
@@ -85,11 +83,11 @@ mod sink {
                 grep::searcher::SinkContextKind::After => {
                     if let Some(last) = self.0.last_mut() {
                         last.next_lines.push_str(matched);
-                    };
+                    }
                 }
 
-                _ => {}
-            };
+                grep::searcher::SinkContextKind::Other => {}
+            }
 
             Ok(true)
         }
@@ -130,7 +128,7 @@ impl Matcher for GrepMatcher {
         Self: Sized,
     {
         let matcher = GrepRegexMatcher::new(pattern)
-            .map_err(|e| format!("Invalid regex pattern '{}': {}", pattern, e))?;
+            .map_err(|e| format!("Invalid regex pattern '{pattern}': {e}"))?;
 
         Ok(Self {
             matcher,
@@ -179,6 +177,7 @@ impl Matcher for GrepMatcher {
 }
 
 #[cfg(test)]
+#[allow(clippy::similar_names)]
 mod tests {
     use super::*;
 
@@ -264,7 +263,7 @@ mod tests {
 
         // Check context before (lines 2, 3, 4)
         let before_lines: Vec<&str> = m.previous_lines.lines().collect();
-        println!("Context before: {:?}", before_lines);
+        println!("Context before: {before_lines:?}");
         println!("previous_lines raw: {:?}", m.previous_lines);
         assert_eq!(
             before_lines.len(),
@@ -277,7 +276,7 @@ mod tests {
 
         // Check context after (lines 6, 7, 8)
         let after_lines: Vec<&str> = m.next_lines.lines().collect();
-        println!("Context after: {:?}", after_lines);
+        println!("Context after: {after_lines:?}");
         println!("next_lines raw: {:?}", m.next_lines);
         assert_eq!(after_lines.len(), 3, "Should have 3 lines of context after");
         assert_eq!(after_lines[0], "line 6");

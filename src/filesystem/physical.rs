@@ -1,6 +1,6 @@
 //! Physical filesystem implementation
 //!
-//! This module provides PhysicalFS, which uses the real OS filesystem.
+//! This module provides `PhysicalFS`, which uses the real OS filesystem.
 //! This is the production adapter used by the CLI.
 
 use super::FileSystem;
@@ -10,13 +10,13 @@ use std::path::Path;
 
 /// Physical filesystem adapter
 ///
-/// This adapter uses std::fs to interact with the real filesystem.
-/// It's used in production but never in tests (tests use MemoryFS).
+/// This adapter uses `std::fs` to interact with the real filesystem.
+/// It's used in production but never in tests (tests use `MemoryFS`).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PhysicalFS;
 
 impl PhysicalFS {
-    /// Create a new PhysicalFS instance
+    /// Create a new `PhysicalFS` instance
     pub fn new() -> Self {
         Self
     }
