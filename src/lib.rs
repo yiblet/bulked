@@ -25,6 +25,7 @@
 // Internal modules
 mod execute;
 mod filesystem;
+mod format;
 mod matcher;
 mod searcher;
 mod types;
@@ -32,6 +33,7 @@ mod walker;
 
 // Re-export main API
 pub use execute::{ExecuteConfig, execute};
+pub use format::{Chunk, Format, FormatError};
 pub use types::{ContextLine, MatchResult, SearchResult};
 
 #[cfg(test)]
