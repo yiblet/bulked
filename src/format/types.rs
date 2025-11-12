@@ -1,6 +1,7 @@
 use miette::{Diagnostic, SourceSpan};
+use std::collections::BTreeMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use thiserror::Error;
 
@@ -126,6 +127,76 @@ pub enum FormatError {
 #[derive(Debug)]
 pub struct Format(pub Vec<Chunk>);
 
+impl Format {
+    /// Returns the number of chunks in the format.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn sort(&mut self) {
+        self.0.sort_by(|c1, c2| c1.as_ref().cmp(&c2.as_ref()));
+    }
+
+    /// Merges all overlapping or adjacent chunks in the format.
+    /// Chunks are first sorted by path and position, then consecutive mergeable chunks
+    /// are combined into single chunks.
+    pub fn merge(&mut self) {
+        self.sort();
+        if self.0.len() < 2 {
+            return;
+        }
+
+        let mut result = Vec::new();
+        let mut chunks = std::mem::take(&mut self.0);
+        let mut current = chunks.remove(0); // Take first chunk
+
+        for chunk in chunks {
+            match current.merge(chunk) {
+                Ok(_) => {
+                    // Merge succeeded, current is now updated in-place
+                    continue;
+                }
+                Err(chunk) => {
+                    // Merge failed, push current and start new one
+                    result.push(current);
+                    current = chunk;
+                }
+            }
+        }
+
+        // Don't forget the last chunk
+        result.push(current);
+        self.0 = result;
+    }
+
+    pub fn chunks(&self) -> BTreeMap<ChunkRef<'_>, &Chunk> {
+        self.0
+            .iter()
+            .map(|chunk| {
+                (
+                    ChunkRef {
+                        path: chunk.path.as_path(),
+                        start_line: chunk.start_line,
+                        num_lines: chunk.num_lines,
+                    },
+                    chunk,
+                )
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ChunkRef<'a> {
+    pub path: &'a Path,
+    pub start_line: usize,
+    pub num_lines: usize,
+}
+
 /// Chunk represents a single code snippet with its metadata and content.
 #[derive(Debug)]
 pub struct Chunk {
@@ -145,6 +216,107 @@ impl Chunk {
             content,
         }
     }
+
+    pub fn as_ref(&self) -> ChunkRef<'_> {
+        ChunkRef {
+            path: self.path.as_path(),
+            start_line: self.start_line,
+            num_lines: self.num_lines,
+        }
+    }
+
+    /// Determines if this chunk can be merged with another chunk.
+    /// Two chunks can be merged if they have the same path and are either:
+    /// - Sequential (no gaps between them)
+    /// - Overlapping
+    pub fn can_merge(&self, other: &Chunk) -> bool {
+        if self.path != other.path {
+            return false;
+        }
+
+        let self_end = self.start_line + self.num_lines;
+        let other_end = other.start_line + other.num_lines;
+
+        // Check if chunks are sequential or overlapping
+        // Sequential: one chunk ends where the other begins
+        // Overlapping: chunks share some lines
+        self_end >= other.start_line && other_end >= self.start_line
+    }
+
+    /// Merges another chunk into this chunk, updating this chunk in place.
+    /// The chunks must be mergeable (use `can_merge` to check first).
+    ///
+    /// For adjacent chunks (no gap), the content is concatenated with a newline.
+    /// For overlapping chunks, the merge keeps all unique lines from both chunks,
+    /// with the earlier chunk's content taking precedence for the overlapping region.
+    ///
+    /// Returns Ok(()) on success, or Err(other) if the chunks cannot be merged.
+    pub fn merge(&mut self, other: Chunk) -> Result<(), Chunk> {
+        if !self.can_merge(&other) {
+            return Err(other);
+        }
+
+        let self_end = self.start_line + self.num_lines;
+        let other_end = other.start_line + other.num_lines;
+
+        // Calculate the merged boundaries
+        let merged_start = self.start_line.min(other.start_line);
+        let merged_end = self_end.max(other_end);
+        let merged_num_lines = merged_end - merged_start;
+
+        // Merge content based on chunk positions
+        let merged_content = if self.start_line <= other.start_line {
+            // self comes first or they start at the same line
+            if self_end >= other.start_line + other.num_lines {
+                // other is completely contained in self, keep self's content
+                self.content.clone()
+            } else if self_end == other.start_line {
+                // Chunks are adjacent, concatenate
+                format!("{}\n{}", self.content, other.content)
+            } else {
+                // Overlapping: self comes first, other extends beyond
+                // Keep self's content and append the non-overlapping part of other
+                let overlap_lines = self_end - other.start_line;
+                let other_lines: Vec<&str> = other.content.lines().collect();
+                let non_overlapping: Vec<&str> =
+                    other_lines.iter().skip(overlap_lines).copied().collect();
+
+                if non_overlapping.is_empty() {
+                    self.content.clone()
+                } else {
+                    format!("{}\n{}", self.content, non_overlapping.join("\n"))
+                }
+            }
+        } else {
+            // other comes first
+            if other_end >= self.start_line + self.num_lines {
+                // self is completely contained in other, use other's content
+                other.content
+            } else if other_end == self.start_line {
+                // Chunks are adjacent, concatenate
+                format!("{}\n{}", other.content, self.content)
+            } else {
+                // Overlapping: other comes first, self extends beyond
+                let overlap_lines = other_end - self.start_line;
+                let self_lines: Vec<&str> = self.content.lines().collect();
+                let non_overlapping: Vec<&str> =
+                    self_lines.iter().skip(overlap_lines).copied().collect();
+
+                if non_overlapping.is_empty() {
+                    other.content
+                } else {
+                    format!("{}\n{}", other.content, non_overlapping.join("\n"))
+                }
+            }
+        };
+
+        // Update self with merged values
+        self.start_line = merged_start;
+        self.num_lines = merged_num_lines;
+        self.content = merged_content;
+
+        Ok(())
+    }
 }
 
 impl fmt::Display for Format {
@@ -161,7 +333,11 @@ impl fmt::Display for Format {
             )?;
 
             // Escaped content
-            writeln!(f, "{}", crate::format::escaping::escape_content(&chunk.content))?;
+            writeln!(
+                f,
+                "{}",
+                crate::format::escaping::escape_content(&chunk.content)
+            )?;
 
             // End delimiter
             writeln!(f, "@@@")?;
@@ -191,12 +367,7 @@ mod tests {
 
     #[test]
     fn test_chunk_new() {
-        let chunk = Chunk::new(
-            PathBuf::from("test.txt"),
-            42,
-            1,
-            "test content".to_string(),
-        );
+        let chunk = Chunk::new(PathBuf::from("test.txt"), 42, 1, "test content".to_string());
         assert_eq!(chunk.start_line, 42);
         assert_eq!(chunk.num_lines, 1);
         assert_eq!(chunk.content, "test content");
@@ -290,5 +461,301 @@ mod tests {
         let deserialized = Format::from_str(&serialized).unwrap();
 
         assert_eq!(deserialized.0[0].content, original.0[0].content);
+    }
+
+    #[test]
+    fn test_chunk_can_merge_same_path_adjacent() {
+        let chunk1 = Chunk::new(
+            PathBuf::from("test.txt"),
+            1,
+            3,
+            "line1\nline2\nline3".to_string(),
+        );
+        let chunk2 = Chunk::new(PathBuf::from("test.txt"), 4, 2, "line4\nline5".to_string());
+        assert!(chunk1.can_merge(&chunk2));
+    }
+
+    #[test]
+    fn test_chunk_can_merge_overlapping() {
+        let chunk1 = Chunk::new(
+            PathBuf::from("test.txt"),
+            1,
+            4,
+            "line1\nline2\nline3\nline4".to_string(),
+        );
+        let chunk2 = Chunk::new(
+            PathBuf::from("test.txt"),
+            3,
+            3,
+            "line3\nline4\nline5".to_string(),
+        );
+        assert!(chunk1.can_merge(&chunk2));
+    }
+
+    #[test]
+    fn test_chunk_cannot_merge_different_paths() {
+        let chunk1 = Chunk::new(PathBuf::from("test1.txt"), 1, 3, "content1".to_string());
+        let chunk2 = Chunk::new(PathBuf::from("test2.txt"), 1, 3, "content2".to_string());
+        assert!(!chunk1.can_merge(&chunk2));
+    }
+
+    #[test]
+    fn test_chunk_cannot_merge_non_overlapping() {
+        let chunk1 = Chunk::new(PathBuf::from("test.txt"), 1, 3, "content1".to_string());
+        let chunk2 = Chunk::new(PathBuf::from("test.txt"), 5, 3, "content2".to_string());
+        assert!(!chunk1.can_merge(&chunk2));
+    }
+
+    #[test]
+    fn test_chunk_merge_adjacent() {
+        let mut chunk1 = Chunk::new(
+            PathBuf::from("test.txt"),
+            1,
+            3,
+            "line1\nline2\nline3".to_string(),
+        );
+        let chunk2 = Chunk::new(PathBuf::from("test.txt"), 4, 2, "line4\nline5".to_string());
+
+        chunk1.merge(chunk2).unwrap();
+
+        assert_eq!(chunk1.start_line, 1);
+        assert_eq!(chunk1.num_lines, 5);
+        assert_eq!(chunk1.content, "line1\nline2\nline3\nline4\nline5");
+    }
+
+    #[test]
+    fn test_chunk_merge_overlapping() {
+        let mut chunk1 = Chunk::new(
+            PathBuf::from("test.txt"),
+            1,
+            4,
+            "line1\nline2\nline3\nline4".to_string(),
+        );
+        let chunk2 = Chunk::new(
+            PathBuf::from("test.txt"),
+            3,
+            3,
+            "line3\nline4\nline5".to_string(),
+        );
+
+        chunk1.merge(chunk2).unwrap();
+
+        assert_eq!(chunk1.start_line, 1);
+        assert_eq!(chunk1.num_lines, 5);
+        // The merge should keep chunk1's content for the overlap and append the non-overlapping part
+        assert_eq!(chunk1.content, "line1\nline2\nline3\nline4\nline5");
+    }
+
+    #[test]
+    fn test_chunk_merge_contained() {
+        let mut chunk1 = Chunk::new(
+            PathBuf::from("test.txt"),
+            1,
+            5,
+            "line1\nline2\nline3\nline4\nline5".to_string(),
+        );
+        let chunk2 = Chunk::new(PathBuf::from("test.txt"), 2, 2, "line2\nline3".to_string());
+
+        chunk1.merge(chunk2).unwrap();
+
+        assert_eq!(chunk1.start_line, 1);
+        assert_eq!(chunk1.num_lines, 5);
+        // chunk2 is completely contained in chunk1, so content stays the same
+        assert_eq!(chunk1.content, "line1\nline2\nline3\nline4\nline5");
+    }
+
+    #[test]
+    fn test_chunk_merge_reverse_order() {
+        let mut chunk1 = Chunk::new(PathBuf::from("test.txt"), 4, 2, "line4\nline5".to_string());
+        let chunk2 = Chunk::new(
+            PathBuf::from("test.txt"),
+            1,
+            3,
+            "line1\nline2\nline3".to_string(),
+        );
+
+        chunk1.merge(chunk2).unwrap();
+
+        assert_eq!(chunk1.start_line, 1);
+        assert_eq!(chunk1.num_lines, 5);
+        assert_eq!(chunk1.content, "line1\nline2\nline3\nline4\nline5");
+    }
+
+    #[test]
+    fn test_chunk_merge_returns_error_for_different_paths() {
+        let mut chunk1 = Chunk::new(PathBuf::from("test1.txt"), 1, 3, "content1".to_string());
+        let chunk2 = Chunk::new(PathBuf::from("test2.txt"), 1, 3, "content2".to_string());
+
+        let result = chunk1.merge(chunk2);
+        assert!(result.is_err());
+    }
+
+    // Tests for Format::merge
+
+    #[test]
+    fn test_format_merge_empty() {
+        let mut format = Format(vec![]);
+        format.merge();
+        assert_eq!(format.len(), 0);
+    }
+
+    #[test]
+    fn test_format_merge_single_chunk() {
+        let mut format = Format(vec![Chunk::new(
+            PathBuf::from("test.txt"),
+            1,
+            3,
+            "line1\nline2\nline3".to_string(),
+        )]);
+        format.merge();
+        assert_eq!(format.len(), 1);
+        assert_eq!(format.0[0].start_line, 1);
+        assert_eq!(format.0[0].num_lines, 3);
+    }
+
+    #[test]
+    fn test_format_merge_two_adjacent_chunks() {
+        let mut format = Format(vec![
+            Chunk::new(
+                PathBuf::from("test.txt"),
+                1,
+                3,
+                "line1\nline2\nline3".to_string(),
+            ),
+            Chunk::new(PathBuf::from("test.txt"), 4, 2, "line4\nline5".to_string()),
+        ]);
+        format.merge();
+        assert_eq!(format.len(), 1);
+        assert_eq!(format.0[0].start_line, 1);
+        assert_eq!(format.0[0].num_lines, 5);
+        assert_eq!(format.0[0].content, "line1\nline2\nline3\nline4\nline5");
+    }
+
+    #[test]
+    fn test_format_merge_two_overlapping_chunks() {
+        let mut format = Format(vec![
+            Chunk::new(
+                PathBuf::from("test.txt"),
+                1,
+                4,
+                "line1\nline2\nline3\nline4".to_string(),
+            ),
+            Chunk::new(
+                PathBuf::from("test.txt"),
+                3,
+                3,
+                "line3\nline4\nline5".to_string(),
+            ),
+        ]);
+        format.merge();
+        assert_eq!(format.len(), 1);
+        assert_eq!(format.0[0].start_line, 1);
+        assert_eq!(format.0[0].num_lines, 5);
+        assert_eq!(format.0[0].content, "line1\nline2\nline3\nline4\nline5");
+    }
+
+    #[test]
+    fn test_format_merge_two_non_adjacent_chunks() {
+        let mut format = Format(vec![
+            Chunk::new(
+                PathBuf::from("test.txt"),
+                1,
+                3,
+                "line1\nline2\nline3".to_string(),
+            ),
+            Chunk::new(PathBuf::from("test.txt"), 7, 2, "line7\nline8".to_string()),
+        ]);
+        format.merge();
+        // Should remain 2 chunks since they can't be merged
+        assert_eq!(format.len(), 2);
+        // Check they're in the correct order
+        assert_eq!(format.0[0].start_line, 1);
+        assert_eq!(format.0[1].start_line, 7);
+    }
+
+    #[test]
+    fn test_format_merge_unsorted_chunks() {
+        let mut format = Format(vec![
+            Chunk::new(PathBuf::from("test.txt"), 7, 2, "line7\nline8".to_string()),
+            Chunk::new(
+                PathBuf::from("test.txt"),
+                1,
+                3,
+                "line1\nline2\nline3".to_string(),
+            ),
+            Chunk::new(PathBuf::from("test.txt"), 4, 2, "line4\nline5".to_string()),
+        ]);
+        format.merge();
+        // First and second should merge (1-3 and 4-5), third stays separate (7-8)
+        assert_eq!(format.len(), 2);
+        // Check the merged chunk
+        assert_eq!(format.0[0].start_line, 1);
+        assert_eq!(format.0[0].num_lines, 5);
+        assert_eq!(format.0[1].start_line, 7);
+    }
+
+    #[test]
+    fn test_format_merge_multiple_files() {
+        let mut format = Format(vec![
+            Chunk::new(
+                PathBuf::from("file1.txt"),
+                1,
+                2,
+                "file1 line1\nfile1 line2".to_string(),
+            ),
+            Chunk::new(
+                PathBuf::from("file1.txt"),
+                3,
+                2,
+                "file1 line3\nfile1 line4".to_string(),
+            ),
+            Chunk::new(
+                PathBuf::from("file2.txt"),
+                1,
+                2,
+                "file2 line1\nfile2 line2".to_string(),
+            ),
+            Chunk::new(
+                PathBuf::from("file2.txt"),
+                3,
+                2,
+                "file2 line3\nfile2 line4".to_string(),
+            ),
+        ]);
+        format.merge();
+        // Should merge to 2 chunks (one per file)
+        assert_eq!(format.len(), 2);
+
+        // Find chunks by path
+        let file1_chunks: Vec<_> = format
+            .0
+            .iter()
+            .filter(|c| c.path == PathBuf::from("file1.txt"))
+            .collect();
+        let file2_chunks: Vec<_> = format
+            .0
+            .iter()
+            .filter(|c| c.path == PathBuf::from("file2.txt"))
+            .collect();
+
+        assert_eq!(file1_chunks.len(), 1);
+        assert_eq!(file2_chunks.len(), 1);
+        assert_eq!(file1_chunks[0].num_lines, 4);
+        assert_eq!(file2_chunks[0].num_lines, 4);
+    }
+
+    #[test]
+    fn test_format_merge_all_mergeable() {
+        let mut format = Format(vec![
+            Chunk::new(PathBuf::from("test.txt"), 1, 2, "line1\nline2".to_string()),
+            Chunk::new(PathBuf::from("test.txt"), 3, 2, "line3\nline4".to_string()),
+            Chunk::new(PathBuf::from("test.txt"), 5, 2, "line5\nline6".to_string()),
+            Chunk::new(PathBuf::from("test.txt"), 7, 2, "line7\nline8".to_string()),
+        ]);
+        format.merge();
+        // All should merge into one chunk
+        assert_eq!(format.len(), 1);
+        assert_eq!(format.0[0].start_line, 1);
+        assert_eq!(format.0[0].num_lines, 8);
     }
 }

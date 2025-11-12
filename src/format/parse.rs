@@ -1,7 +1,6 @@
 use super::escaping::unescape_content;
 use super::types::{Chunk, Format, FormatError};
 use nom::{
-    IResult,
     branch::alt,
     bytes::complete::{tag, take_till1},
     character::complete::{char, line_ending, not_line_ending, space0},
@@ -9,6 +8,7 @@ use nom::{
     error::{ErrorKind, ParseError as NomParseError},
     multi::many0,
     sequence::{preceded, tuple},
+    IResult,
 };
 use std::path::PathBuf;
 
@@ -184,7 +184,8 @@ fn start_delimiter<'a>(
     start_offset: usize,
 ) -> impl Fn(&'a str) -> ParseResult<'a, (PathBuf, usize, usize)> {
     move |input| {
-        // FIXME: is there a cleaner way to do this? 
+        // Use closures to lazily construct errors with the correct offset
+        // This avoids cloning and is more efficient than constructing errors upfront
         let invalid_failure = || nom::Err::Failure(invalid_delimiter_error(start_offset));
         let invalid_error = || nom::Err::Error(invalid_delimiter_error(start_offset));
 
@@ -257,23 +258,20 @@ fn chunk_content<'a>(
 }
 
 /// Parse end delimiter: @@@
+/// Allows any text after @@@ until the end of the line (which is ignored).
 fn parse_end_delimiter_nom<'a>(input: &'a str) -> ParseResult<'a, ()> {
-    // FIXME: parse end delimiter should be permissive and allow characters after @@@
-    // until the end of the line. 
-    //
-    // Add a test case for this as well.
     let (input, _) = tag("@@@")(input)?;
+    // Allow optional text after @@@ until end of line
+    let (input, _) = nom::combinator::opt(not_line_ending)(input)?;
     let (input, _) = alt((line_ending, recognize(nom::combinator::eof)))(input)?;
     Ok((input, ()))
 }
 
 /// Skip whitespace and comment lines
 fn skip_whitespace_and_comments<'a>(input: &'a str) -> ParseResult<'a, ()> {
-    // FIXME: we can make this more efficient by using better combinators like 
-    // multispace and sharing the line_ending combinator.
     let (input, _) = many0(alt((
         // Skip whitespace lines (line with only whitespace)
-        recognize(tuple((many0(alt((char(' '), char('\t')))), line_ending))),
+        recognize(tuple((space0, line_ending))),
         // Skip comment lines (non-@ lines)
         recognize(tuple((
             nom::combinator::peek(nom::combinator::not(char('@'))),
@@ -439,5 +437,32 @@ more content
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_format_from_str_with_trailing_text_after_delimiter() {
+        // End delimiter can have trailing text/comments after @@@
+        let input = "@test.txt:1:1\ncontent\n@@@ this is a comment\n";
+
+        let format = Format::from_str(input).unwrap();
+        assert_eq!(format.0.len(), 1);
+        assert_eq!(format.0[0].content, "content");
+    }
+
+    #[test]
+    fn test_format_from_str_multiple_chunks_with_trailing_text() {
+        let input = r#"@test.txt:5:1
+line 5
+@@@ comment here
+
+@test.txt:10:1
+line 10
+@@@ another comment
+"#;
+
+        let format = Format::from_str(input).unwrap();
+        assert_eq!(format.0.len(), 2);
+        assert_eq!(format.0[0].content, "line 5");
+        assert_eq!(format.0[1].content, "line 10");
     }
 }

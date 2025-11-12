@@ -30,8 +30,10 @@ mod matcher;
 mod searcher;
 mod types;
 mod walker;
+mod apply;
 
 // Re-export main API
+pub use apply::{apply_format, ApplyError};
 pub use execute::{ExecuteConfig, execute};
 pub use format::{Chunk, Format, FormatError};
 pub use types::{ContextLine, MatchResult, SearchResult};
