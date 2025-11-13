@@ -45,19 +45,23 @@ where
     /// Returns Ok with matches if successful, or Err with a `SearchError` if the file
     /// couldn't be searched.
     fn search_file(&self, path: &Path) -> Result<Vec<MatchResult>, SearchError> {
+        use crate::filesystem::FilesystemError;
+
         // Check if file exists
         if !self.fs.exists(path) {
             return Err(SearchError::FileReadError {
-                path: path.to_path_buf(),
-                error: "File does not exist".to_string(),
+                source: FilesystemError::FileNotFound {
+                    path: path.to_path_buf(),
+                },
             });
         }
 
         // Check if it's actually a file
         if !self.fs.is_file(path) {
             return Err(SearchError::FileReadError {
-                path: path.to_path_buf(),
-                error: "Not a file".to_string(),
+                source: FilesystemError::NotAFile {
+                    path: path.to_path_buf(),
+                },
             });
         }
 
@@ -71,24 +75,18 @@ where
         {
             None => {
                 // Read file contents
-                let content = self.fs.read_to_string(path).map_err(|e| {
-                    tracing::warn!("Failed to read {}: {}", path.display(), e);
-                    SearchError::FileReadError {
-                        path: path.to_path_buf(),
-                        error: e,
-                    }
+                let content = self.fs.read_to_string(path).map_err(|source| {
+                    tracing::warn!("Failed to read {}: {}", path.display(), source);
+                    source
                 })?;
 
                 // Search for matches
                 self.matcher.search_in_content(&content)
             }
 
-            Some(matches) => matches.map_err(|e| {
-                tracing::warn!("Search error: {}", e);
-                SearchError::FileReadError {
-                    path: path.to_path_buf(),
-                    error: e,
-                }
+            Some(matches) => matches.map_err(|source| {
+                tracing::warn!("Search error: {}", source);
+                source
             })?,
         };
 
@@ -121,14 +119,7 @@ where
                 }
                 Err(err) => {
                     // Log errors but continue searching
-                    match &err {
-                        SearchError::FileReadError { path, error } => {
-                            tracing::warn!("Error reading {}: {}", path.display(), error);
-                        }
-                        SearchError::Multiple(_) => {
-                            tracing::error!("Multiple errors occurred");
-                        }
-                    }
+                    tracing::warn!("Search error: {}", err);
                     errors.push(err);
                 }
             }
@@ -146,7 +137,7 @@ where
 mod tests {
     use super::*;
     use crate::filesystem::memory::MemoryFS;
-    use crate::matcher::grep::GrepMatcher;
+    use crate::matcher::regex::GrepMatcher;
     use crate::matcher::stub::StubMatcher;
     use crate::walker::simple::SimpleWalker;
     use std::path::PathBuf;
@@ -264,7 +255,7 @@ mod tests {
             SearchError::FileReadError { .. } => {
                 // Expected single error
             }
-            SearchError::Multiple(_) => panic!("Expected FileReadError"),
+            _ => panic!("Expected FileReadError"),
         }
     }
 

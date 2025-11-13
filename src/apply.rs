@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 /// Apply a format to a file
 ///
 /// The core function in this module is `apply_format` which takes chunks and file content
@@ -8,7 +10,7 @@
 /// 2. Sort chunks by line number
 /// 3. Convert to segments (alternating between modified chunks and unmodified content)
 /// 4. Reconstruct the final string from segments
-use crate::format::Chunk;
+use crate::{Format, filesystem::FileSystem, format::Chunk};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -30,9 +32,16 @@ pub enum ApplyError {
 
     #[error("Invalid line number: line numbers must be >= 1")]
     InvalidLineNumber,
+
+    #[error("Failed to modify file {path}: {source}")]
+    ModifyError {
+        path: PathBuf,
+        #[source]
+        source: crate::filesystem::FilesystemError,
+    },
 }
 
-pub fn chunks_are_all_for_same_path(chunks: &[Chunk]) -> Result<(), ApplyError> {
+fn chunks_are_all_for_same_path(chunks: &[Chunk]) -> Result<(), ApplyError> {
     let Some(first) = chunks.first() else {
         return Ok(());
     };
@@ -43,14 +52,14 @@ pub fn chunks_are_all_for_same_path(chunks: &[Chunk]) -> Result<(), ApplyError> 
     Ok(())
 }
 
-pub fn chunks_have_valid_line_numbers(chunks: &[Chunk]) -> Result<(), ApplyError> {
+fn chunks_have_valid_line_numbers(chunks: &[Chunk]) -> Result<(), ApplyError> {
     if !chunks.iter().all(|c| c.start_line >= 1) {
         return Err(ApplyError::InvalidLineNumber);
     }
     Ok(())
 }
 
-pub fn chunks_are_sorted_by_line_number(chunks: &[Chunk]) -> Result<(), ApplyError> {
+fn chunks_are_sorted_by_line_number(chunks: &[Chunk]) -> Result<(), ApplyError> {
     if !chunks
         .windows(2)
         .all(|w| w[0].start_line <= w[1].start_line)
@@ -60,7 +69,7 @@ pub fn chunks_are_sorted_by_line_number(chunks: &[Chunk]) -> Result<(), ApplyErr
     Ok(())
 }
 
-pub fn chunks_are_not_overlapping(chunks: &[Chunk]) -> Result<(), ApplyError> {
+fn chunks_are_not_overlapping(chunks: &[Chunk]) -> Result<(), ApplyError> {
     for window in chunks.windows(2) {
         if let [c1, c2] = window {
             let c1_end = c1.start_line + c1.num_lines;
@@ -77,7 +86,7 @@ pub fn chunks_are_not_overlapping(chunks: &[Chunk]) -> Result<(), ApplyError> {
     Ok(())
 }
 
-pub fn chunks_are_within_file_bounds(chunks: &[Chunk], content: &str) -> Result<(), ApplyError> {
+fn chunks_are_within_file_bounds(chunks: &[Chunk], content: &str) -> Result<(), ApplyError> {
     let file_lines = content.lines().count();
     for chunk in chunks {
         let end_line = chunk.start_line + chunk.num_lines - 1;
@@ -92,11 +101,12 @@ pub fn chunks_are_within_file_bounds(chunks: &[Chunk], content: &str) -> Result<
     Ok(())
 }
 
-pub enum Segment<'a> {
+enum Segment<'a> {
     Chunk(&'a Chunk),
     Content(&'a str),
 }
 
+// TODO: figure out what happens if the content has less lines than the chunks expect
 fn segments_from_chunks<'a>(
     mut chunks: &'a [Chunk],
     mut content: &'a str,
@@ -176,6 +186,41 @@ pub fn apply_format(chunks: &[Chunk], content: &str) -> Result<String, ApplyErro
         .collect();
 
     Ok(result)
+}
+
+pub fn apply_format_to_fs(
+    format: &mut Format,
+    fs: &mut dyn FileSystem,
+) -> Result<(), Vec<ApplyError>> {
+    let mut errors = Vec::new();
+
+    for (path, chunks) in format.file_chunks() {
+        let write_result = fs
+            .read_to_string(path)
+            .map_err(|e| ApplyError::ModifyError {
+                path: path.to_path_buf(),
+                source: e,
+            })
+            .and_then(|content| {
+                let modified_content = apply_format(chunks, &content)?;
+                fs.write_string(path, &modified_content)
+                    .map_err(|e| ApplyError::ModifyError {
+                        path: path.to_path_buf(),
+                        source: e,
+                    })?;
+                Ok(())
+            });
+
+        if let Err(err) = write_result {
+            errors.push(err);
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@
 //! match results. This allows testing search logic without depending on
 //! regex engine behavior.
 
-use super::{MatchInfo, Matcher};
+use super::{MatchInfo, Matcher, MatcherError};
 use std::{
     path::Path,
     sync::{Arc, Mutex},
@@ -74,7 +74,7 @@ impl Default for StubMatcher {
 }
 
 impl Matcher for StubMatcher {
-    fn compile(_pattern: &str) -> Result<Self, String>
+    fn compile(_pattern: &str) -> Result<Self, MatcherError>
     where
         Self: Sized,
     {
@@ -96,8 +96,8 @@ impl Matcher for StubMatcher {
 
     fn search_path(
         &self,
-    ) -> Option<impl FnMut(&std::path::Path) -> Result<Vec<MatchInfo>, String>> {
-        None::<Box<dyn FnMut(&Path) -> Result<Vec<MatchInfo>, String>>>
+    ) -> Option<impl FnMut(&std::path::Path) -> Result<Vec<MatchInfo>, MatcherError>> {
+        None::<Box<dyn FnMut(&Path) -> Result<Vec<MatchInfo>, MatcherError>>>
     }
 }
 

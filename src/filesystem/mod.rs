@@ -7,7 +7,52 @@
 pub mod memory;
 pub mod physical;
 
-use std::{borrow::Cow, path::Path};
+use std::{
+    borrow::Cow,
+    path::{Path, PathBuf},
+    string::FromUtf8Error,
+};
+use thiserror::Error;
+
+/// Errors that can occur during filesystem operations
+#[derive(Debug, Error)]
+pub enum FilesystemError {
+    /// File not found
+    #[error("File not found: {path}")]
+    FileNotFound { path: PathBuf },
+
+    /// Path exists but is not a file (e.g., directory)
+    #[error("Not a file: {path}")]
+    NotAFile { path: PathBuf },
+
+    /// Failed to read file
+    #[error("Failed to read file {path}: {source}")]
+    ReadError {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Invalid UTF-8 content
+    #[error("Invalid UTF-8 in file {path}: {source}")]
+    InvalidUtf8 {
+        path: PathBuf,
+        #[source]
+        source: FromUtf8Error,
+    },
+
+    /// Failed to write file
+    #[error("Failed to write file {path}: {source}")]
+    WriteError {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Lock error (for MemoryFS)
+    #[error("Lock error")]
+    LockError,
+}
 
 /// Abstract filesystem interface
 ///
@@ -17,8 +62,11 @@ use std::{borrow::Cow, path::Path};
 pub trait FileSystem: Send + Sync {
     /// Read the entire contents of a file as a string
     ///
+    /// # Errors
     /// Returns an error if the file doesn't exist, isn't readable, or contains invalid UTF-8.
-    fn read_to_string(&self, path: &Path) -> Result<String, String>;
+    fn read_to_string(&self, path: &Path) -> Result<String, FilesystemError>;
+
+    fn write_string(&self, path: &Path, content: &str) -> Result<(), FilesystemError>;
 
     fn as_real_path<'a>(&self, path: &'a Path) -> Option<Cow<'a, Path>>;
 

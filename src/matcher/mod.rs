@@ -5,9 +5,32 @@
 //! match results without depending on actual regex engine behavior.
 
 use std::path::Path;
+use thiserror::Error;
 
-pub mod grep;
+// Import the regex error type from grep crate
+use grep::regex::Error as GrepRegexError;
+
+pub mod regex;
 pub mod stub;
+
+/// Errors that can occur during pattern matching operations
+#[derive(Debug, Error)]
+pub enum MatcherError {
+    /// Invalid regex pattern
+    #[error("Invalid regex pattern '{pattern}': {source}")]
+    InvalidPattern {
+        pattern: String,
+        #[source]
+        source: GrepRegexError,
+    },
+
+    /// Search operation failed
+    #[error("Search error: {source}")]
+    SearchError {
+        #[source]
+        source: std::io::Error,
+    },
+}
 
 /// Information about a single match within file content
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,7 +56,7 @@ pub trait Matcher: Send + Sync {
     /// Compile a pattern into a matcher
     ///
     /// Returns an error if the pattern is invalid.
-    fn compile(pattern: &str) -> Result<Self, String>
+    fn compile(pattern: &str) -> Result<Self, MatcherError>
     where
         Self: Sized;
 
@@ -51,14 +74,14 @@ pub trait Matcher: Send + Sync {
     /// Search for matches in file content
     ///
     /// Returns all matches found in the content, with line numbers and positions.
-    fn search_path(&self) -> Option<impl FnMut(&Path) -> Result<Vec<MatchInfo>, String>>;
+    fn search_path(&self) -> Option<impl FnMut(&Path) -> Result<Vec<MatchInfo>, MatcherError>>;
 }
 
 #[cfg(test)]
 #[allow(clippy::similar_names)]
 mod tests {
     use super::*;
-    use crate::matcher::grep::GrepMatcher;
+    use crate::matcher::regex::GrepMatcher;
     use crate::matcher::stub::StubMatcher;
 
     #[test]

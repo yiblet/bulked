@@ -24,7 +24,7 @@
 
 // Internal modules
 mod execute;
-mod filesystem;
+pub mod filesystem;
 mod format;
 mod matcher;
 mod searcher;
@@ -33,8 +33,8 @@ mod walker;
 mod apply;
 
 // Re-export main API
-pub use apply::{apply_format, ApplyError};
-pub use execute::{ExecuteConfig, execute};
+pub use apply::{apply_format, apply_format_to_fs, ApplyError};
+pub use execute::{ExecuteConfig, ExecuteError, execute};
 pub use format::{Chunk, Format, FormatError};
 pub use types::{ContextLine, MatchResult, SearchResult};
 
@@ -42,7 +42,7 @@ pub use types::{ContextLine, MatchResult, SearchResult};
 mod integration_tests {
     use crate::filesystem::memory::MemoryFS;
     use crate::matcher::Matcher; // Import the trait
-    use crate::matcher::grep::GrepMatcher;
+    use crate::matcher::regex::GrepMatcher;
     use crate::searcher::Searcher;
     use crate::walker::simple::SimpleWalker;
     use std::path::PathBuf;

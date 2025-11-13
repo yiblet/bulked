@@ -139,6 +139,50 @@ impl Format {
         self.0.is_empty()
     }
 
+    /// Converts a slice of match results into a Format.
+    /// Each match result is converted to a chunk containing the match line
+    /// along with its before and after context lines.
+    pub fn from_matches(matches: &[crate::types::MatchResult]) -> Self {
+        let chunks: Vec<Chunk> = matches
+            .iter()
+            .map(|match_result| {
+                // Calculate the starting line number (accounting for context before)
+                let start_line = match match_result.context_before.as_slice() {
+                    [] => match_result.line_number,
+                    [first, ..] => first.line_number,
+                };
+
+                // Build the content from context_before + match line + context_after
+                let mut content_lines = Vec::new();
+
+                // Add context before
+                for ctx in &match_result.context_before {
+                    content_lines.push(ctx.content.as_str());
+                }
+
+                // Add the match line itself
+                content_lines.push(&match_result.line_content);
+
+                // Add context after
+                for ctx in &match_result.context_after {
+                    content_lines.push(ctx.content.as_str());
+                }
+
+                let content = content_lines.join("\n");
+                let num_lines = content_lines.len();
+
+                Chunk::new(
+                    match_result.file_path.clone(),
+                    start_line,
+                    num_lines,
+                    content,
+                )
+            })
+            .collect();
+
+        Self(chunks)
+    }
+
     fn sort(&mut self) {
         self.0.sort_by(|c1, c2| c1.as_ref().cmp(&c2.as_ref()));
     }
@@ -172,6 +216,31 @@ impl Format {
         // Don't forget the last chunk
         result.push(current);
         self.0 = result;
+    }
+
+    pub fn file_chunks(&mut self) -> Vec<(&Path, &[Chunk])> {
+        self.sort();
+
+        let mut res = Vec::new();
+        let mut cur_file = None;
+        for (idx, chunk) in self.0.iter().enumerate() {
+            match cur_file {
+                None => {
+                    cur_file = Some((0, chunk));
+                }
+                Some((start, start_chunk)) if chunk.path != start_chunk.path => {
+                    res.push((chunk.path.as_ref(), &self.0[start..idx]));
+                    cur_file = Some((idx, chunk));
+                }
+                _ => {}
+            }
+        }
+
+        if let Some((start, chunk)) = cur_file {
+            res.push((chunk.path.as_ref(), &self.0[start..]));
+        }
+
+        res
     }
 
     #[must_use]
@@ -329,7 +398,11 @@ impl Chunk {
 impl fmt::Display for Format {
     /// Serializes the Format to the file format string.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for chunk in &self.0 {
+        for (idx, chunk) in self.0.iter().enumerate() {
+            if idx != 0 {
+                f.write_str("\n")?;
+            };
+
             // Start delimiter: @path:line:numlines
             writeln!(
                 f,

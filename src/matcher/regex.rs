@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use super::{MatchInfo, Matcher};
+use super::{MatchInfo, Matcher, MatcherError};
 use grep::matcher::Matcher as GrepMatcherTrait;
 use grep::regex::RegexMatcher as GrepRegexMatcher;
 use grep::searcher::{BinaryDetection, Searcher, SearcherBuilder};
@@ -123,12 +123,16 @@ impl GrepMatcher {
 }
 
 impl Matcher for GrepMatcher {
-    fn compile(pattern: &str) -> Result<Self, String>
+    fn compile(pattern: &str) -> Result<Self, MatcherError>
     where
         Self: Sized,
     {
-        let matcher = GrepRegexMatcher::new(pattern)
-            .map_err(|e| format!("Invalid regex pattern '{pattern}': {e}"))?;
+        let matcher = GrepRegexMatcher::new(pattern).map_err(|source| {
+            MatcherError::InvalidPattern {
+                pattern: pattern.to_string(),
+                source,
+            }
+        })?;
 
         Ok(Self {
             matcher,
@@ -159,17 +163,14 @@ impl Matcher for GrepMatcher {
         self.matcher.is_match(text.as_bytes()).unwrap_or(false)
     }
 
-    fn search_path(&self) -> Option<impl FnMut(&Path) -> Result<Vec<MatchInfo>, String>> {
+    fn search_path(&self) -> Option<impl FnMut(&Path) -> Result<Vec<MatchInfo>, MatcherError>> {
         Some(move |path: &Path| {
             let mut matches = Vec::new();
             let mut searcher = self.build_searcher();
             // Use UTF8 sink to collect matches
-            let result = searcher.search_path(&self.matcher, path, sink::UTF8::new(&mut matches));
-
-            // Log any errors but don't fail
-            if let Err(e) = result {
-                tracing::warn!("Search error: {}", e);
-            }
+            searcher
+                .search_path(&self.matcher, path, sink::UTF8::new(&mut matches))
+                .map_err(|source| MatcherError::SearchError { source })?;
 
             Ok(matches)
         })
@@ -241,8 +242,9 @@ mod tests {
         let result = GrepMatcher::compile("[unclosed");
 
         assert!(result.is_err());
-        let err_msg = result.unwrap_err();
-        assert!(err_msg.contains("Invalid regex pattern"));
+        let err = result.unwrap_err();
+        assert!(matches!(err, MatcherError::InvalidPattern { .. }));
+        assert!(err.to_string().contains("Invalid regex pattern"));
     }
 
     #[test]

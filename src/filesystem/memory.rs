@@ -3,7 +3,7 @@
 //! This module provides `MemoryFS`, a fake filesystem that stores all data in memory.
 //! It's used for hermetic testing without touching the real filesystem.
 
-use super::FileSystem;
+use super::{FileSystem, FilesystemError};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,29 +30,23 @@ impl MemoryFS {
     }
 
     /// Add a file to the filesystem with string content
-    pub fn add_file(&self, path: &Path, content: &str) -> Result<(), String> {
+    pub fn add_file(&self, path: &Path, content: &str) -> Result<(), FilesystemError> {
         self.add_file_bytes(path, content.as_bytes())
     }
 
     /// Add a file to the filesystem with binary content
-    pub fn add_file_bytes(&self, path: &Path, content: &[u8]) -> Result<(), String> {
-        let mut files = self
-            .files
-            .write()
-            .map_err(|e| format!("Lock error: {e}"))?;
+    pub fn add_file_bytes(&self, path: &Path, content: &[u8]) -> Result<(), FilesystemError> {
+        let mut files = self.files.write().map_err(|_| FilesystemError::LockError)?;
         files.insert(path.to_path_buf(), content.to_vec());
         Ok(())
     }
 
     /// Remove a file from the filesystem
-    pub fn remove_file(&self, path: &Path) -> Result<(), String> {
-        let mut files = self
-            .files
-            .write()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        files
-            .remove(path)
-            .ok_or_else(|| format!("File not found: {}", path.display()))?;
+    pub fn remove_file(&self, path: &Path) -> Result<(), FilesystemError> {
+        let mut files = self.files.write().map_err(|_| FilesystemError::LockError)?;
+        files.remove(path).ok_or_else(|| FilesystemError::FileNotFound {
+            path: path.to_path_buf(),
+        })?;
         Ok(())
     }
 
@@ -75,18 +69,23 @@ impl FileSystem for MemoryFS {
         None
     }
 
-    fn read_to_string(&self, path: &Path) -> Result<String, String> {
-        let files = self
-            .files
-            .read()
-            .map_err(|e| format!("Lock error: {e}"))?;
+    fn read_to_string(&self, path: &Path) -> Result<String, FilesystemError> {
+        let files = self.files.read().map_err(|_| FilesystemError::LockError)?;
 
-        let bytes = files
-            .get(path)
-            .ok_or_else(|| format!("File not found: {}", path.display()))?;
+        let bytes = files.get(path).ok_or_else(|| FilesystemError::FileNotFound {
+            path: path.to_path_buf(),
+        })?;
 
-        String::from_utf8(bytes.clone())
-            .map_err(|e| format!("Invalid UTF-8 in file {}: {}", path.display(), e))
+        String::from_utf8(bytes.clone()).map_err(|source| FilesystemError::InvalidUtf8 {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
+    fn write_string(&self, path: &Path, content: &str) -> Result<(), FilesystemError> {
+        let mut files = self.files.write().map_err(|_| FilesystemError::LockError)?;
+        files.insert(path.to_path_buf(), content.as_bytes().to_vec());
+        Ok(())
     }
 
     fn exists(&self, path: &Path) -> bool {
@@ -155,5 +154,33 @@ mod tests {
 
         assert!(!fs.exists(&PathBuf::from("/file1.txt")));
         assert!(!fs.exists(&PathBuf::from("/file2.txt")));
+    }
+
+    #[test]
+    fn test_memory_fs_write_string() {
+        let fs = MemoryFS::new();
+        let path = PathBuf::from("/test.txt");
+        let content = "Hello, world!";
+
+        // Write the file
+        fs.write_string(&path, content).unwrap();
+
+        // Verify it exists and can be read back
+        assert!(fs.exists(&path));
+        assert_eq!(fs.read_to_string(&path).unwrap(), content);
+    }
+
+    #[test]
+    fn test_memory_fs_write_overwrites_existing() {
+        let fs = MemoryFS::new();
+        let path = PathBuf::from("/test.txt");
+
+        // Write initial content
+        fs.write_string(&path, "initial").unwrap();
+        assert_eq!(fs.read_to_string(&path).unwrap(), "initial");
+
+        // Overwrite with new content
+        fs.write_string(&path, "updated").unwrap();
+        assert_eq!(fs.read_to_string(&path).unwrap(), "updated");
     }
 }

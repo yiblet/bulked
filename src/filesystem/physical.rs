@@ -3,7 +3,7 @@
 //! This module provides `PhysicalFS`, which uses the real OS filesystem.
 //! This is the production adapter used by the CLI.
 
-use super::FileSystem;
+use super::{FileSystem, FilesystemError};
 use std::borrow::Cow;
 use std::fs;
 use std::path::Path;
@@ -23,8 +23,18 @@ impl PhysicalFS {
 }
 
 impl FileSystem for PhysicalFS {
-    fn read_to_string(&self, path: &Path) -> Result<String, String> {
-        fs::read_to_string(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))
+    fn read_to_string(&self, path: &Path) -> Result<String, FilesystemError> {
+        fs::read_to_string(path).map_err(|source| FilesystemError::ReadError {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
+
+    fn write_string(&self, path: &Path, content: &str) -> Result<(), FilesystemError> {
+        fs::write(path, content).map_err(|source| FilesystemError::WriteError {
+            path: path.to_path_buf(),
+            source,
+        })
     }
 
     fn exists(&self, path: &Path) -> bool {

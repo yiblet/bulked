@@ -4,12 +4,31 @@
 //! defaults and production implementations (`PhysicalFS`, `GrepMatcher`, `IgnoreWalker`).
 
 use crate::filesystem::physical::PhysicalFS;
-use crate::matcher::Matcher;
-use crate::matcher::grep::GrepMatcher;
+use crate::matcher::{Matcher, MatcherError};
+use crate::matcher::regex::GrepMatcher;
 use crate::searcher::Searcher;
-use crate::types::SearchResult;
+use crate::types::{SearchError, SearchResult};
 use crate::walker::ignore_walker::IgnoreWalker;
 use std::path::PathBuf;
+use thiserror::Error;
+
+/// Errors that can occur during search execution
+#[derive(Debug, Error)]
+pub enum ExecuteError {
+    /// Pattern compilation failed
+    #[error("Pattern error: {source}")]
+    PatternError {
+        #[from]
+        source: MatcherError,
+    },
+
+    /// Search execution failed
+    #[error("Search error: {source}")]
+    SearchError {
+        #[from]
+        source: SearchError,
+    },
+}
 
 /// Configuration for executing a search with production adapters
 #[derive(Debug, Clone)]
@@ -25,6 +44,9 @@ pub struct ExecuteConfig {
 
     /// Whether to respect .gitignore and .ignore files
     pub respect_gitignore: bool,
+
+    /// Whether to include hidden files
+    pub hidden: bool,
 }
 
 impl ExecuteConfig {
@@ -35,6 +57,7 @@ impl ExecuteConfig {
             path: path.into(),
             context_lines: 20,
             respect_gitignore: true,
+            hidden: false,
         }
     }
 
@@ -51,6 +74,13 @@ impl ExecuteConfig {
         self.respect_gitignore = respect;
         self
     }
+
+    /// Set whether to include hidden files (default: false)
+    #[must_use]
+    pub fn with_hidden(mut self, hidden: bool) -> Self {
+        self.hidden = hidden;
+        self
+    }
 }
 
 /// Execute a search with production adapters (`PhysicalFS`, `GrepMatcher`, `IgnoreWalker`)
@@ -64,13 +94,13 @@ impl ExecuteConfig {
 /// # Returns
 ///
 /// * `Ok(SearchResult)` - Results containing all matches found
-/// * `Err(String)` - Error message describing what went wrong
+/// * `Err(ExecuteError)` - Error describing what went wrong
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - The regex pattern is invalid
-/// - File read errors occur during search (wrapped in `SearchError::Multiple` if multiple files fail)
+/// - The regex pattern is invalid (`ExecuteError::PatternError`)
+/// - File read errors occur during search (`ExecuteError::SearchError`)
 ///
 /// # Example
 ///
@@ -90,19 +120,18 @@ impl ExecuteConfig {
 ///     }
 /// }
 /// ```
-pub fn execute(config: &ExecuteConfig) -> Result<SearchResult, String> {
+pub fn execute(config: &ExecuteConfig) -> Result<SearchResult, ExecuteError> {
     // Create production adapters
     let fs = PhysicalFS::new();
 
     let matcher = GrepMatcher::compile(&config.pattern)?.with_context(config.context_lines);
 
-    let walker = IgnoreWalker::new(&config.path, config.respect_gitignore);
+    let walker = IgnoreWalker::new(&config.path, config.respect_gitignore, config.hidden);
 
     // Execute search
     let searcher = Searcher::new(fs, matcher, walker);
 
-    // FIXME: why are we mapping errors and serializing this? seems like a bad call to do that.
-    searcher.search_all().map_err(|e| format!("{e:?}"))
+    Ok(searcher.search_all()?)
 }
 
 #[cfg(test)]
@@ -157,6 +186,8 @@ mod tests {
         let result = execute(&config);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid regex pattern"));
+        let err = result.unwrap_err();
+        assert!(matches!(err, ExecuteError::PatternError { .. }));
+        assert!(err.to_string().contains("Invalid regex pattern"));
     }
 }

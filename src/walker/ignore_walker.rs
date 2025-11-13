@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 pub struct IgnoreWalker {
     root: PathBuf,
     respect_gitignore: bool,
+    include_hidden: bool,
 }
 
 impl IgnoreWalker {
@@ -24,22 +25,36 @@ impl IgnoreWalker {
     ///
     /// * `root` - Root directory to start walking from
     /// * `respect_gitignore` - Whether to respect .gitignore files
-    pub fn new(root: impl AsRef<Path>, respect_gitignore: bool) -> Self {
+    /// * `hidden` - Whether to include hidden files
+    pub fn new(root: impl AsRef<Path>, respect_gitignore: bool, hidden: bool) -> Self {
         Self {
             root: root.as_ref().to_path_buf(),
             respect_gitignore,
+            include_hidden: hidden,
         }
     }
 }
 
 impl Walker for IgnoreWalker {
     fn files(&self) -> Box<dyn Iterator<Item = PathBuf> + '_> {
-        let walker = WalkBuilder::new(&self.root)
+        let mut walker = WalkBuilder::new(&self.root);
+
+        let walker = walker
             .git_ignore(self.respect_gitignore)
             .git_global(self.respect_gitignore)
             .git_exclude(self.respect_gitignore)
-            .hidden(false) // Don't skip hidden files by default
-            .build();
+            .hidden(!self.include_hidden);
+
+        let walker = if self.respect_gitignore {
+            walker.filter_entry(|entry| {
+                // Always skip .git directories
+                entry.file_name() != ".git"
+            })
+        } else {
+            walker
+        };
+
+        let walker = walker.build();
 
         Box::new(
             walker

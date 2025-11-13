@@ -6,7 +6,8 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
-use crate::matcher::MatchInfo;
+use crate::filesystem::FilesystemError;
+use crate::matcher::{MatchInfo, MatcherError};
 
 /// A single match result from searching a file
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,11 +71,21 @@ pub struct ContextLine {
 }
 
 /// Errors that can occur during searching
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Error)]
 pub enum SearchError {
     /// Failed to read a file
-    #[error("Failed to read {path}: {error}")]
-    FileReadError { path: PathBuf, error: String },
+    #[error("Failed to read file: {source}")]
+    FileReadError {
+        #[from]
+        source: FilesystemError,
+    },
+
+    /// Pattern matching failed
+    #[error("Pattern matching error: {source}")]
+    MatcherError {
+        #[from]
+        source: MatcherError,
+    },
 
     /// Multiple errors occurred during search
     #[error("{} errors occurred during search", .0.len())]
@@ -149,28 +160,34 @@ mod tests {
 
     #[test]
     fn test_search_error_from_errors() {
-        let error1 = SearchError::FileReadError {
-            path: PathBuf::from("/test1"),
-            error: "error1".to_string(),
-        };
-        let error2 = SearchError::FileReadError {
-            path: PathBuf::from("/test2"),
-            error: "error2".to_string(),
-        };
+        use crate::filesystem::FilesystemError;
 
+        let error1 = SearchError::FileReadError {
+            source: FilesystemError::FileNotFound {
+                path: PathBuf::from("/test1"),
+            },
+        };
         // Single error should unwrap
-        let single = SearchError::from_errors(vec![error1.clone()]);
-        assert_eq!(single, error1);
+        let single = SearchError::from_errors(vec![error1]);
+        assert!(matches!(single, SearchError::FileReadError { .. }));
 
         // Multiple errors should wrap
-        let multiple = SearchError::from_errors(vec![error1.clone(), error2.clone()]);
+        let error2 = SearchError::FileReadError {
+            source: FilesystemError::FileNotFound {
+                path: PathBuf::from("/test2"),
+            },
+        };
+        let error3 = SearchError::FileReadError {
+            source: FilesystemError::FileNotFound {
+                path: PathBuf::from("/test3"),
+            },
+        };
+        let multiple = SearchError::from_errors(vec![error2, error3]);
         match multiple {
             SearchError::Multiple(errors) => {
                 assert_eq!(errors.len(), 2);
-                assert_eq!(errors[0], error1);
-                assert_eq!(errors[1], error2);
             }
-            SearchError::FileReadError { .. } => panic!("Expected Multiple variant"),
+            _ => panic!("Expected Multiple variant"),
         }
     }
 }
