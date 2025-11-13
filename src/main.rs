@@ -387,4 +387,42 @@ mod integration_tests {
             "Should not find matches in gitignored files"
         );
     }
+
+    /// Test that search -> format -> apply roundtrip preserves file content
+    ///
+    /// This test verifies that when we search for a pattern, convert results to Format,
+    /// and apply the format back to the file WITHOUT any modifications, the file content
+    /// remains identical. This ensures newlines are preserved correctly throughout the pipeline.
+    #[test]
+    fn test_search_format_apply_roundtrip_preserves_content() {
+        use crate::apply::apply_format_to_fs;
+        use crate::filesystem::FileSystem;
+        use crate::format::Format;
+
+        // Create test file with specific content that has multiple lines
+        let fs = MemoryFS::new();
+        let test_file = PathBuf::from("/test/file.txt");
+        let original_content = "line 1\nline 2\nfunc here\nline 4\nline 5\n";
+        fs.add_file(&test_file, original_content).unwrap();
+
+        // Search for pattern with context
+        let matcher = GrepMatcher::compile("func").unwrap().with_context(2);
+        let walker = SimpleWalker::new(vec![test_file.clone()]);
+        let searcher = Searcher::new(fs.clone(), matcher, walker);
+        let result = searcher.search_all().unwrap();
+
+        // Convert matches to Format
+        let mut format = Format::from_matches(&result.matches);
+
+        // Apply the format back to the file (no modifications)
+        apply_format_to_fs(&mut format, &mut fs.clone()).unwrap();
+
+        // Read the file back and verify it's unchanged
+        let final_content = fs.read_to_string(&test_file).unwrap();
+        assert_eq!(
+            original_content, final_content,
+            "Content should be identical after roundtrip.\nOriginal:\n{:?}\nFinal:\n{:?}",
+            original_content, final_content
+        );
+    }
 }

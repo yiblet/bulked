@@ -264,7 +264,9 @@ mod tests {
         assert_eq!(m.line_content, "MATCH line 5");
 
         // Check context before (lines 2, 3, 4)
-        let before_lines: Vec<&str> = m.previous_lines.lines().collect();
+        let before_lines: Vec<&str> = m.previous_lines
+            .split_inclusive('\n')
+            .collect();
         println!("Context before: {before_lines:?}");
         println!("previous_lines raw: {:?}", m.previous_lines);
         assert_eq!(
@@ -272,17 +274,19 @@ mod tests {
             3,
             "Should have 3 lines of context before"
         );
-        assert_eq!(before_lines[0], "line 2");
-        assert_eq!(before_lines[1], "line 3");
-        assert_eq!(before_lines[2], "line 4");
+        assert_eq!(before_lines[0], "line 2\n");
+        assert_eq!(before_lines[1], "line 3\n");
+        assert_eq!(before_lines[2], "line 4\n");
 
         // Check context after (lines 6, 7, 8)
-        let after_lines: Vec<&str> = m.next_lines.lines().collect();
+        let after_lines: Vec<&str> = m.next_lines
+            .split_inclusive('\n')
+            .collect();
         println!("Context after: {after_lines:?}");
         println!("next_lines raw: {:?}", m.next_lines);
         assert_eq!(after_lines.len(), 3, "Should have 3 lines of context after");
-        assert_eq!(after_lines[0], "line 6");
-        assert_eq!(after_lines[1], "line 7");
-        assert_eq!(after_lines[2], "line 8");
+        assert_eq!(after_lines[0], "line 6\n");
+        assert_eq!(after_lines[1], "line 7\n");
+        assert_eq!(after_lines[2], "line 8\n");
     }
 }

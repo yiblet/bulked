@@ -153,23 +153,24 @@ impl Format {
                 };
 
                 // Build the content from context_before + match line + context_after
-                let mut content_lines = Vec::new();
+                // Context lines now include '\n' at the end, but match line does not
+                let mut content = String::new();
 
-                // Add context before
+                // Add context before (each already has '\n')
                 for ctx in &match_result.context_before {
-                    content_lines.push(ctx.content.as_str());
+                    content.push_str(&ctx.content);
                 }
 
-                // Add the match line itself
-                content_lines.push(&match_result.line_content);
+                // Add the match line (needs '\n' added)
+                content.push_str(&match_result.line_content);
+                content.push('\n');
 
-                // Add context after
+                // Add context after (each already has '\n')
                 for ctx in &match_result.context_after {
-                    content_lines.push(ctx.content.as_str());
+                    content.push_str(&ctx.content);
                 }
 
-                let content = content_lines.join("\n");
-                let num_lines = content_lines.len();
+                let num_lines = match_result.context_before.len() + 1 + match_result.context_after.len();
 
                 Chunk::new(
                     match_result.file_path.clone(),
@@ -348,19 +349,26 @@ impl Chunk {
                 self.content.clone()
             } else if self_end == other.start_line {
                 // Chunks are adjacent, concatenate
-                format!("{}\n{}", self.content, other.content)
+                if self.content.ends_with('\n') {
+                    format!("{}{}", self.content, other.content)
+                } else {
+                    format!("{}\n{}", self.content, other.content)
+                }
             } else {
                 // Overlapping: self comes first, other extends beyond
                 // Keep self's content and append the non-overlapping part of other
                 let overlap_lines = self_end - other.start_line;
-                let other_lines: Vec<&str> = other.content.lines().collect();
-                let non_overlapping: Vec<&str> =
-                    other_lines.iter().skip(overlap_lines).copied().collect();
+                let non_overlapping = other.content
+                    .split_inclusive('\n')
+                    .skip(overlap_lines)
+                    .collect::<String>();
 
                 if non_overlapping.is_empty() {
                     self.content.clone()
+                } else if self.content.ends_with('\n') {
+                    format!("{}{}", self.content, non_overlapping)
                 } else {
-                    format!("{}\n{}", self.content, non_overlapping.join("\n"))
+                    format!("{}\n{}", self.content, non_overlapping)
                 }
             }
         } else {
@@ -370,18 +378,25 @@ impl Chunk {
                 other.content
             } else if other_end == self.start_line {
                 // Chunks are adjacent, concatenate
-                format!("{}\n{}", other.content, self.content)
+                if other.content.ends_with('\n') {
+                    format!("{}{}", other.content, self.content)
+                } else {
+                    format!("{}\n{}", other.content, self.content)
+                }
             } else {
                 // Overlapping: other comes first, self extends beyond
                 let overlap_lines = other_end - self.start_line;
-                let self_lines: Vec<&str> = self.content.lines().collect();
-                let non_overlapping: Vec<&str> =
-                    self_lines.iter().skip(overlap_lines).copied().collect();
+                let non_overlapping = self.content
+                    .split_inclusive('\n')
+                    .skip(overlap_lines)
+                    .collect::<String>();
 
                 if non_overlapping.is_empty() {
                     other.content
+                } else if other.content.ends_with('\n') {
+                    format!("{}{}", other.content, non_overlapping)
                 } else {
-                    format!("{}\n{}", other.content, non_overlapping.join("\n"))
+                    format!("{}\n{}", other.content, non_overlapping)
                 }
             }
         };
@@ -412,8 +427,8 @@ impl fmt::Display for Format {
                 chunk.num_lines
             )?;
 
-            // Escaped content
-            writeln!(
+            // Escaped content (content already has trailing newline, don't add another)
+            write!(
                 f,
                 "{}",
                 crate::format::escaping::escape_content(&chunk.content)
@@ -506,13 +521,13 @@ mod tests {
                 PathBuf::from("src/lib.rs"),
                 1,
                 3,
-                "pub fn test() {\n    // test\n}".to_string(),
+                "pub fn test() {\n    // test\n}\n".to_string(),
             ),
             Chunk::new(
                 PathBuf::from("src/lib.rs"),
                 20,
                 1,
-                "fn another() {}".to_string(),
+                "fn another() {}\n".to_string(),
             ),
         ]);
 
@@ -534,7 +549,7 @@ mod tests {
             PathBuf::from("test.txt"),
             1,
             2,
-            "@ symbol and \\ backslash\nuser@email.com\\path\\to\\file".to_string(),
+            "@ symbol and \\ backslash\nuser@email.com\\path\\to\\file\n".to_string(),
         )]);
 
         let serialized = original.to_string();

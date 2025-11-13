@@ -300,15 +300,15 @@ mod tests {
         // Verify context before (lines 1-2)
         assert_eq!(m.context_before.len(), 2);
         assert_eq!(m.context_before[0].line_number, 1);
-        assert_eq!(m.context_before[0].content, "line 1");
+        assert_eq!(m.context_before[0].content, "line 1\n");
         assert_eq!(m.context_before[1].line_number, 2);
-        assert_eq!(m.context_before[1].content, "line 2");
+        assert_eq!(m.context_before[1].content, "line 2\n");
 
         // Verify context after (lines 4-5)
         assert_eq!(m.context_after.len(), 2);
         assert_eq!(m.context_after[0].line_number, 4);
-        assert_eq!(m.context_after[0].content, "line 4");
+        assert_eq!(m.context_after[0].content, "line 4\n");
         assert_eq!(m.context_after[1].line_number, 5);
-        assert_eq!(m.context_after[1].content, "line 5");
+        assert_eq!(m.context_after[1].content, "line 5\n");
     }
 }

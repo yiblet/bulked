@@ -87,7 +87,9 @@ fn chunks_are_not_overlapping(chunks: &[Chunk]) -> Result<(), ApplyError> {
 }
 
 fn chunks_are_within_file_bounds(chunks: &[Chunk], content: &str) -> Result<(), ApplyError> {
-    let file_lines = content.lines().count();
+    let file_lines = content
+        .split_inclusive('\n')
+        .count();
     for chunk in chunks {
         let end_line = chunk.start_line + chunk.num_lines - 1;
         if end_line > file_lines {
