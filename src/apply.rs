@@ -10,7 +10,10 @@ use std::path::PathBuf;
 /// 2. Sort chunks by line number
 /// 3. Convert to segments (alternating between modified chunks and unmodified content)
 /// 4. Reconstruct the final string from segments
-use crate::{Format, filesystem::FileSystem, format::Chunk};
+use crate::{
+    filesystem::FileSystem,
+    format::{Chunk, Format},
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
