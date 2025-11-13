@@ -229,7 +229,7 @@ impl Format {
                     cur_file = Some((0, chunk));
                 }
                 Some((start, start_chunk)) if chunk.path != start_chunk.path => {
-                    res.push((chunk.path.as_ref(), &self.0[start..idx]));
+                    res.push((start_chunk.path.as_ref(), &self.0[start..idx]));
                     cur_file = Some((idx, chunk));
                 }
                 _ => {}
@@ -237,7 +237,7 @@ impl Format {
         }
 
         if let Some((start, chunk)) = cur_file {
-            res.push((chunk.path.as_ref(), &self.0[start..]));
+            res.push((chunk.path.as_path(), &self.0[start..]));
         }
 
         res
@@ -837,5 +837,49 @@ mod tests {
         assert_eq!(format.len(), 1);
         assert_eq!(format.0[0].start_line, 1);
         assert_eq!(format.0[0].num_lines, 8);
+    }
+
+    #[test]
+    fn test_file_chunks_multiple_files() {
+        // This test verifies the fix for the bug where file_chunks would panic
+        // when grouping chunks from multiple files. The bug was on line 232 where
+        // it used chunk.path instead of start_chunk.path when transitioning between files.
+        let mut format = Format(vec![
+            Chunk::new(PathBuf::from("src/main.rs"), 1, 2, "fn main() {\n    println!(\"Hello\");".to_string()),
+            Chunk::new(PathBuf::from("src/main.rs"), 10, 1, "// comment".to_string()),
+            Chunk::new(PathBuf::from("src/lib.rs"), 5, 3, "pub fn test() {\n    // test\n}".to_string()),
+            Chunk::new(PathBuf::from("src/lib.rs"), 20, 2, "pub fn another() {\n}".to_string()),
+            Chunk::new(PathBuf::from("tests/integration.rs"), 1, 1, "#[test]".to_string()),
+        ]);
+
+        let file_chunks = format.file_chunks();
+
+        // Should have 3 different files
+        assert_eq!(file_chunks.len(), 3);
+
+        // Verify first file (src/lib.rs comes first alphabetically after sorting)
+        assert_eq!(file_chunks[0].0, Path::new("src/lib.rs"));
+        assert_eq!(file_chunks[0].1.len(), 2);
+        assert_eq!(file_chunks[0].1[0].start_line, 5);
+        assert_eq!(file_chunks[0].1[1].start_line, 20);
+
+        // Verify second file (src/main.rs)
+        assert_eq!(file_chunks[1].0, Path::new("src/main.rs"));
+        assert_eq!(file_chunks[1].1.len(), 2);
+        assert_eq!(file_chunks[1].1[0].start_line, 1);
+        assert_eq!(file_chunks[1].1[1].start_line, 10);
+
+        // Verify third file (tests/integration.rs)
+        assert_eq!(file_chunks[2].0, Path::new("tests/integration.rs"));
+        assert_eq!(file_chunks[2].1.len(), 1);
+        assert_eq!(file_chunks[2].1[0].start_line, 1);
+
+        // Verify that all chunks in each group have the correct path
+        for (path, chunks) in file_chunks {
+            for chunk in chunks {
+                assert_eq!(chunk.path.as_path(), path,
+                    "Chunk path mismatch: expected {:?}, got {:?}", path, chunk.path);
+            }
+        }
     }
 }

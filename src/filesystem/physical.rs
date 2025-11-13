@@ -49,8 +49,3 @@ impl FileSystem for PhysicalFS {
         Some(Cow::Borrowed(path))
     }
 }
-
-// Note: We don't add #[cfg(test)] tests for PhysicalFS here because
-// testing it would require touching the real filesystem, which violates
-// our hermetic testing principle. PhysicalFS is simple enough that we
-// trust std::fs, and we test the FileSystem trait contract with MemoryFS.
