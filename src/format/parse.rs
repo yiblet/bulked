@@ -2,14 +2,14 @@ use super::escaping::unescape_content;
 use super::types::{Chunk, Format, FormatError};
 use nom::combinator::opt;
 use nom::{
-    IResult,
+    IResult, Parser,
     branch::alt,
     bytes::complete::{tag, take_till1, take_while},
     character::complete::char,
     combinator::recognize,
     error::{ErrorKind, ParseError as NomParseError},
     multi::many0,
-    sequence::{preceded, tuple},
+    sequence::preceded,
 };
 use std::path::PathBuf;
 
@@ -151,7 +151,7 @@ pub fn parse_format(src: &str) -> Result<Format, FormatError> {
     })?;
 
     // Parse all chunks
-    let (_, chunks) = many0(preceded(skip_whitespace_and_comments, chunk_parser))(input).map_err(
+    let (_, chunks) = many0(preceded(skip_whitespace_and_comments, chunk_parser)).parse(input).map_err(
         |e| match e {
             nom::Err::Error(e) | nom::Err::Failure(e) => e.into_format_error(src),
             nom::Err::Incomplete(_) => FormatError::NoChunks {
@@ -273,14 +273,14 @@ fn chunk_content<'a>(
 /// Parse end delimiter: @@@ or @@@- (no newline at end of file)
 /// Allows any text after @@@ until the end of the line (which is ignored).
 fn parse_end_delimiter_nom(input: &str) -> ParseResult<'_, bool> {
-    let (input, _) = tag("@@@")(input)?;
+    let (input, _) = tag("@@@").parse(input)?;
 
-    let (input, opt_tag) = opt(tag("-"))(input)?;
+    let (input, opt_tag) = opt(tag("-")).parse(input)?;
     let is_no_newline_eol = opt_tag.is_some();
 
     // Allow optional text after @@@ until end of line
-    let (input, _) = nom::combinator::opt(not_newline)(input)?;
-    let (input, _) = alt((recognize(newline), recognize(nom::combinator::eof)))(input)?;
+    let (input, _) = opt(not_newline).parse(input)?;
+    let (input, _) = alt((recognize(newline), recognize(nom::combinator::eof))).parse(input)?;
     Ok((input, is_no_newline_eol))
 }
 
@@ -288,12 +288,12 @@ fn parse_end_delimiter_nom(input: &str) -> ParseResult<'_, bool> {
 fn skip_whitespace_and_comments(input: &str) -> ParseResult<'_, ()> {
     let (input, _) = many0(
         // Skip comment lines (non-@ lines)
-        recognize(tuple((
+        recognize((
             nom::combinator::peek(nom::combinator::not(char('@'))),
             not_newline,
             newline,
-        ))),
-    )(input)?;
+        )),
+    ).parse(input)?;
 
     Ok((input, ()))
 }
