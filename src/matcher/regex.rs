@@ -127,12 +127,11 @@ impl Matcher for GrepMatcher {
     where
         Self: Sized,
     {
-        let matcher = GrepRegexMatcher::new(pattern).map_err(|source| {
-            MatcherError::InvalidPattern {
+        let matcher =
+            GrepRegexMatcher::new(pattern).map_err(|source| MatcherError::InvalidPattern {
                 pattern: pattern.to_string(),
                 source,
-            }
-        })?;
+            })?;
 
         Ok(Self {
             matcher,
@@ -264,9 +263,7 @@ mod tests {
         assert_eq!(m.line_content, "MATCH line 5");
 
         // Check context before (lines 2, 3, 4)
-        let before_lines: Vec<&str> = m.previous_lines
-            .split_inclusive('\n')
-            .collect();
+        let before_lines: Vec<&str> = m.previous_lines.split_inclusive('\n').collect();
         println!("Context before: {before_lines:?}");
         println!("previous_lines raw: {:?}", m.previous_lines);
         assert_eq!(
@@ -279,9 +276,7 @@ mod tests {
         assert_eq!(before_lines[2], "line 4\n");
 
         // Check context after (lines 6, 7, 8)
-        let after_lines: Vec<&str> = m.next_lines
-            .split_inclusive('\n')
-            .collect();
+        let after_lines: Vec<&str> = m.next_lines.split_inclusive('\n').collect();
         println!("Context after: {after_lines:?}");
         println!("next_lines raw: {:?}", m.next_lines);
         assert_eq!(after_lines.len(), 3, "Should have 3 lines of context after");

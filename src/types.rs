@@ -35,9 +35,7 @@ impl MatchResult {
             line_content: match_info.line_content,
             byte_offset: match_info.byte_offset,
             context_before: {
-                let lines: Vec<&str> = match_info.previous_lines
-                    .split_inclusive('\n')
-                    .collect();
+                let lines: Vec<&str> = match_info.previous_lines.split_inclusive('\n').collect();
                 let count = lines.len();
                 lines
                     .into_iter()

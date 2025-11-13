@@ -4,8 +4,8 @@
 //! defaults and production implementations (`PhysicalFS`, `GrepMatcher`, `IgnoreWalker`).
 
 use crate::filesystem::physical::PhysicalFS;
-use crate::matcher::{Matcher, MatcherError};
 use crate::matcher::regex::GrepMatcher;
+use crate::matcher::{Matcher, MatcherError};
 use crate::searcher::Searcher;
 use crate::types::{SearchError, SearchResult};
 use crate::walker::ignore_walker::IgnoreWalker;
@@ -107,7 +107,7 @@ impl ExecuteConfig {
 /// ```no_run
 /// use bulked::{execute, ExecuteConfig};
 ///
-/// let config = ExecuteConfig::new("TODO", ".")
+/// let config = ExecuteConfig::new("EXAMPLE", ".")
 ///     .with_context_lines(5)
 ///     .with_respect_gitignore(true);
 ///

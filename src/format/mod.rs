@@ -3,4 +3,4 @@ pub mod parse;
 pub mod types;
 
 // Re-export public types
-pub use types::{Chunk, Format, FormatError};
+pub use types::{Chunk, Format};

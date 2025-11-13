@@ -1,6 +1,8 @@
 use super::escaping::unescape_content;
 use super::types::{Chunk, Format, FormatError};
+use nom::combinator::opt;
 use nom::{
+    IResult,
     branch::alt,
     bytes::complete::{tag, take_till1, take_while},
     character::complete::char,
@@ -8,7 +10,6 @@ use nom::{
     error::{ErrorKind, ParseError as NomParseError},
     multi::many0,
     sequence::{preceded, tuple},
-    IResult,
 };
 use std::path::PathBuf;
 
@@ -29,35 +30,36 @@ fn not_newline(input: &str) -> ParseResult<'_, &str> {
 /// Custom nom error type that carries context for generating `FormatError`
 #[derive(Debug, Clone)]
 pub(super) struct ParserError {
+    suffix_len: usize,
     pub(super) kind: ParserErrorKind,
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum ParserErrorKind {
-    InvalidDelimiter {
-        suffix_len: usize,
-    },
+    InvalidDelimiter,
     InvalidLineNumber {
         value: String,
-        suffix_len: usize,
         len: usize,
     },
     InvalidNumLines {
         value: String,
-        suffix_len: usize,
         len: usize,
     },
     MissingEndDelimiter {
         start_suffix_len: usize,
         start_len: usize,
     },
-    Nom(ErrorKind),
+    Nom {
+        #[allow(dead_code)]
+        kind: ErrorKind,
+    },
 }
 
 impl<'a> NomParseError<&'a str> for ParserError {
-    fn from_error_kind(_input: &'a str, _kind: ErrorKind) -> Self {
+    fn from_error_kind(input: &'a str, kind: ErrorKind) -> Self {
         ParserError {
-            kind: ParserErrorKind::Nom(_kind),
+            suffix_len: input.len(),
+            kind: ParserErrorKind::Nom { kind },
         }
     }
 
@@ -67,15 +69,18 @@ impl<'a> NomParseError<&'a str> for ParserError {
 }
 
 impl ParserError {
-    pub(super) fn new(kind: ParserErrorKind) -> Self {
-        ParserError { kind }
+    pub(super) fn new(input: &str, kind: ParserErrorKind) -> Self {
+        ParserError {
+            suffix_len: input.len(),
+            kind,
+        }
     }
 
     pub(super) fn into_format_error(self, source: &str) -> FormatError {
         let src = source.to_string();
         match self.kind {
-            ParserErrorKind::InvalidDelimiter { suffix_len } => {
-                let offset = source.len() - suffix_len;
+            ParserErrorKind::InvalidDelimiter => {
+                let offset = source.len() - self.suffix_len;
                 let end = source[offset..]
                     .find('\n')
                     .map_or(source.len(), |i| offset + i);
@@ -84,24 +89,16 @@ impl ParserError {
                     span: (offset, end - offset).into(),
                 }
             }
-            ParserErrorKind::InvalidLineNumber {
-                value,
-                suffix_len,
-                len,
-            } => {
-                let offset = source.len() - suffix_len;
+            ParserErrorKind::InvalidLineNumber { value, len } => {
+                let offset = source.len() - self.suffix_len;
                 FormatError::InvalidLineNumber {
                     value,
                     src,
                     span: (offset, len).into(),
                 }
             }
-            ParserErrorKind::InvalidNumLines {
-                value,
-                suffix_len,
-                len,
-            } => {
-                let offset = source.len() - suffix_len;
+            ParserErrorKind::InvalidNumLines { value, len } => {
+                let offset = source.len() - self.suffix_len;
                 FormatError::InvalidNumLines {
                     value,
                     src,
@@ -109,17 +106,14 @@ impl ParserError {
                 }
             }
             ParserErrorKind::MissingEndDelimiter {
-                start_suffix_len,
                 start_len,
-            } => {
-                let start_offset = source.len() - start_suffix_len;
-                FormatError::MissingEndDelimiter {
-                    src: src.clone(),
-                    start_span: (start_offset, start_len).into(),
-                    eof_span: (src.len().saturating_sub(1), 1).into(),
-                }
-            }
-            ParserErrorKind::Nom(_) => FormatError::NoChunks { src },
+                start_suffix_len,
+            } => FormatError::MissingEndDelimiter {
+                src: src.clone(),
+                start_span: (source.len() - start_suffix_len, start_len).into(),
+                eof_span: (src.len().saturating_sub(1), 1).into(),
+            },
+            ParserErrorKind::Nom { .. } => FormatError::NoChunks { src },
         }
     }
 }
@@ -127,9 +121,7 @@ impl ParserError {
 type ParseResult<'a, T> = IResult<&'a str, T, ParserError>;
 
 fn invalid_delimiter_error(input: &str) -> ParserError {
-    ParserError::new(ParserErrorKind::InvalidDelimiter {
-        suffix_len: input.len(),
-    })
+    ParserError::new(input, ParserErrorKind::InvalidDelimiter {})
 }
 
 fn parse_usize_segment<F>(
@@ -138,14 +130,13 @@ fn parse_usize_segment<F>(
     err_builder: F,
 ) -> Result<usize, nom::Err<ParserError>>
 where
-    F: FnOnce(String, usize, usize) -> ParserErrorKind,
+    F: FnOnce(String, usize) -> ParserErrorKind,
 {
     segment.parse::<usize>().map_err(|_| {
-        nom::Err::Failure(ParserError::new(err_builder(
-            segment.to_string(),
-            input.len(),
-            segment.len(),
-        )))
+        nom::Err::Failure(ParserError::new(
+            input,
+            err_builder(segment.to_string(), segment.len()),
+        ))
     })
 }
 
@@ -185,14 +176,23 @@ fn chunk_parser(input: &str) -> ParseResult<'_, Chunk> {
 
     let (input, (path, line_number, numlines)) = start_delimiter(input)?;
 
-    let (input, content) = chunk_content(chunk_start_suffix_len, header_len)(input)?;
+    let (input, mut content) = chunk_content(chunk_start_suffix_len, header_len)(input)?;
 
-    let (input, ()) = parse_end_delimiter_nom(input)?;
+    let (input, no_newline_eol) = parse_end_delimiter_nom(input)?;
+    if no_newline_eol && content.ends_with('\n') {
+        content.pop();
+    }
 
     let unescaped_content = unescape_content(&content);
     Ok((
         input,
-        Chunk::new(path, line_number, numlines, unescaped_content),
+        Chunk::new(
+            path,
+            line_number,
+            numlines,
+            unescaped_content,
+            no_newline_eol,
+        ),
     ))
 }
 
@@ -212,24 +212,16 @@ fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, usize, usize)> {
     if !input.starts_with(':') {
         return Err(invalid_failure());
     }
-    let line_number = parse_usize_segment(line_str, input, |value, suffix_len, len| {
-        ParserErrorKind::InvalidLineNumber {
-            value,
-            suffix_len,
-            len,
-        }
+    let line_number = parse_usize_segment(line_str, input, |value, len| {
+        ParserErrorKind::InvalidLineNumber { value, len }
     })?;
 
     let (input, _) = char(':')(input).map_err(|_: nom::Err<ParserError>| invalid_failure())?;
 
     let (input, numlines_str) = take_till1(|c| c == '\n' || c == '\r')(input)
         .map_err(|_: nom::Err<ParserError>| invalid_failure())?;
-    let numlines = parse_usize_segment(numlines_str, input, |value, suffix_len, len| {
-        ParserErrorKind::InvalidNumLines {
-            value,
-            suffix_len,
-            len,
-        }
+    let numlines = parse_usize_segment(numlines_str, input, |value, len| {
+        ParserErrorKind::InvalidNumLines { value, len }
     })?;
 
     let (input, _) = space0(input)?;
@@ -253,9 +245,10 @@ fn chunk_content<'a>(
 
             if current.is_empty() {
                 return Err(nom::Err::Failure(ParserError::new(
+                    current,
                     ParserErrorKind::MissingEndDelimiter {
-                        start_suffix_len: chunk_start_suffix_len,
                         start_len: header_len,
+                        start_suffix_len: chunk_start_suffix_len,
                     },
                 )));
             }
@@ -277,14 +270,18 @@ fn chunk_content<'a>(
     }
 }
 
-/// Parse end delimiter: @@@
+/// Parse end delimiter: @@@ or @@@- (no newline at end of file)
 /// Allows any text after @@@ until the end of the line (which is ignored).
-fn parse_end_delimiter_nom(input: &str) -> ParseResult<'_, ()> {
+fn parse_end_delimiter_nom(input: &str) -> ParseResult<'_, bool> {
     let (input, _) = tag("@@@")(input)?;
+
+    let (input, opt_tag) = opt(tag("-"))(input)?;
+    let is_no_newline_eol = opt_tag.is_some();
+
     // Allow optional text after @@@ until end of line
     let (input, _) = nom::combinator::opt(not_newline)(input)?;
     let (input, _) = alt((recognize(newline), recognize(nom::combinator::eof)))(input)?;
-    Ok((input, ()))
+    Ok((input, is_no_newline_eol))
 }
 
 /// Skip whitespace and comment lines

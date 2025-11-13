@@ -87,9 +87,7 @@ fn chunks_are_not_overlapping(chunks: &[Chunk]) -> Result<(), ApplyError> {
 }
 
 fn chunks_are_within_file_bounds(chunks: &[Chunk], content: &str) -> Result<(), ApplyError> {
-    let file_lines = content
-        .split_inclusive('\n')
-        .count();
+    let file_lines = content.split_inclusive('\n').count();
     for chunk in chunks {
         let end_line = chunk.start_line + chunk.num_lines - 1;
         if end_line > file_lines {
@@ -108,7 +106,6 @@ enum Segment<'a> {
     Content(&'a str),
 }
 
-// TODO: figure out what happens if the content has less lines than the chunks expect
 fn segments_from_chunks<'a>(
     mut chunks: &'a [Chunk],
     mut content: &'a str,
@@ -246,6 +243,7 @@ mod tests {
             2,
             2,
             "modified2\nmodified3\n".to_string(),
+            false,
         )];
         let result = apply_format(&chunks, content).unwrap();
         assert_eq!(result, "line1\nmodified2\nmodified3\nline4");
@@ -255,8 +253,14 @@ mod tests {
     fn test_apply_multiple_chunks() {
         let content = "line1\nline2\nline3\nline4\nline5";
         let chunks = vec![
-            Chunk::new(PathBuf::from("test.txt"), 1, 1, "mod1\n".to_string()),
-            Chunk::new(PathBuf::from("test.txt"), 4, 2, "mod4\nmod5\n".to_string()),
+            Chunk::new(PathBuf::from("test.txt"), 1, 1, "mod1\n".to_string(), false),
+            Chunk::new(
+                PathBuf::from("test.txt"),
+                4,
+                2,
+                "mod4\nmod5\n".to_string(),
+                false,
+            ),
         ];
         let result = apply_format(&chunks, content).unwrap();
         assert_eq!(result, "mod1\nline2\nline3\nmod4\nmod5\n");
@@ -270,6 +274,7 @@ mod tests {
             1,
             1,
             "modified1\n".to_string(),
+            false,
         )];
         let result = apply_format(&chunks, content).unwrap();
         assert_eq!(result, "modified1\nline2\nline3");
@@ -283,6 +288,7 @@ mod tests {
             3,
             1,
             "modified3\n".to_string(),
+            false,
         )];
         let result = apply_format(&chunks, content).unwrap();
         assert_eq!(result, "line1\nline2\nmodified3\n");
@@ -292,8 +298,20 @@ mod tests {
     fn test_apply_mixed_paths_error() {
         let content = "line1\nline2";
         let chunks = vec![
-            Chunk::new(PathBuf::from("test1.txt"), 1, 1, "mod1\n".to_string()),
-            Chunk::new(PathBuf::from("test2.txt"), 2, 1, "mod2\n".to_string()),
+            Chunk::new(
+                PathBuf::from("test1.txt"),
+                1,
+                1,
+                "mod1\n".to_string(),
+                false,
+            ),
+            Chunk::new(
+                PathBuf::from("test2.txt"),
+                2,
+                1,
+                "mod2\n".to_string(),
+                false,
+            ),
         ];
         let result = apply_format(&chunks, content);
         assert!(matches!(result, Err(ApplyError::MixedPaths)));
@@ -303,8 +321,8 @@ mod tests {
     fn test_apply_overlapping_chunks_error() {
         let content = "line1\nline2\nline3\nline4";
         let chunks = vec![
-            Chunk::new(PathBuf::from("test.txt"), 1, 3, "mod1".to_string()),
-            Chunk::new(PathBuf::from("test.txt"), 2, 2, "mod2".to_string()),
+            Chunk::new(PathBuf::from("test.txt"), 1, 3, "mod1".to_string(), false),
+            Chunk::new(PathBuf::from("test.txt"), 2, 2, "mod2".to_string(), false),
         ];
         let result = apply_format(&chunks, content);
         assert!(matches!(
@@ -321,6 +339,7 @@ mod tests {
             3,
             2,
             "mod".to_string(),
+            false,
         )];
         let result = apply_format(&chunks, content);
         assert!(matches!(result, Err(ApplyError::ChunkOutOfBounds { .. })));
@@ -334,6 +353,7 @@ mod tests {
             1,
             3,
             "new1\nnew2\nnew3".to_string(),
+            false,
         )];
         let result = apply_format(&chunks, content).unwrap();
         assert_eq!(result, "new1\nnew2\nnew3");
@@ -343,8 +363,8 @@ mod tests {
     fn test_apply_unsorted_chunks() {
         let content = "line1\nline2\nline3\nline4\nline5";
         let chunks = vec![
-            Chunk::new(PathBuf::from("test.txt"), 4, 1, "mod4".to_string()),
-            Chunk::new(PathBuf::from("test.txt"), 1, 1, "mod1".to_string()),
+            Chunk::new(PathBuf::from("test.txt"), 4, 1, "mod4".to_string(), false),
+            Chunk::new(PathBuf::from("test.txt"), 1, 1, "mod1".to_string(), false),
         ];
         let result = apply_format(&chunks, content);
         assert!(matches!(result, Err(ApplyError::InvalidLineNumber)));

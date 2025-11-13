@@ -44,9 +44,11 @@ impl MemoryFS {
     /// Remove a file from the filesystem
     pub fn remove_file(&self, path: &Path) -> Result<(), FilesystemError> {
         let mut files = self.files.write().map_err(|_| FilesystemError::LockError)?;
-        files.remove(path).ok_or_else(|| FilesystemError::FileNotFound {
-            path: path.to_path_buf(),
-        })?;
+        files
+            .remove(path)
+            .ok_or_else(|| FilesystemError::FileNotFound {
+                path: path.to_path_buf(),
+            })?;
         Ok(())
     }
 
@@ -72,9 +74,11 @@ impl FileSystem for MemoryFS {
     fn read_to_string(&self, path: &Path) -> Result<String, FilesystemError> {
         let files = self.files.read().map_err(|_| FilesystemError::LockError)?;
 
-        let bytes = files.get(path).ok_or_else(|| FilesystemError::FileNotFound {
-            path: path.to_path_buf(),
-        })?;
+        let bytes = files
+            .get(path)
+            .ok_or_else(|| FilesystemError::FileNotFound {
+                path: path.to_path_buf(),
+            })?;
 
         String::from_utf8(bytes.clone()).map_err(|source| FilesystemError::InvalidUtf8 {
             path: path.to_path_buf(),
