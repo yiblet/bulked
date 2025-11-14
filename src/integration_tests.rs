@@ -40,13 +40,14 @@ fn test_full_stack_integration() {
     ]);
 
     let searcher = Searcher::new(fs, matcher, walker);
-    let result = searcher.search_all().unwrap();
+    let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+    let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
 
     // Should find "fn " in both .rs files
-    assert!(result.matches.len() >= 2, "Should find at least 2 matches");
+    assert!(all_matches.len() >= 2, "Should find at least 2 matches");
 
     // Verify matches are from .rs files
-    for m in &result.matches {
+    for m in &all_matches {
         assert!(
             m.file_path
                 .extension()
@@ -113,18 +114,18 @@ fn test_bulked_search_with_context() {
     ]);
 
     let searcher = Searcher::new(fs, matcher, walker);
-    let result = searcher.search_all().unwrap();
+    let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+    let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
 
     // Verify correct number of matches (2 matches in non-ignored files)
     assert_eq!(
-        result.matches.len(),
+        all_matches.len(),
         2,
         "Should find exactly 2 matches in non-ignored files"
     );
 
     // Verify first match (file1.txt, line 25 with full context)
-    let match1 = result
-        .matches
+    let match1 = all_matches
         .iter()
         .find(|m| m.file_path.to_str().unwrap().contains("file1.txt"))
         .expect("Should find match in file1.txt");
@@ -151,8 +152,7 @@ fn test_bulked_search_with_context() {
     assert_eq!(match1.context_after[19].line_number, 45);
 
     // Verify second match (file2.txt, line 3 near start - limited context)
-    let match2 = result
-        .matches
+    let match2 = all_matches
         .iter()
         .find(|m| m.file_path.to_str().unwrap().contains("file2.txt"))
         .expect("Should find match in file2.txt");
@@ -179,8 +179,7 @@ fn test_bulked_search_with_context() {
 
     // Verify gitignored file was NOT searched
     assert!(
-        !result
-            .matches
+        !all_matches
             .iter()
             .any(|m| m.file_path.to_str().unwrap().contains("ignored.log")),
         "Should not find matches in gitignored files"
@@ -208,10 +207,11 @@ fn test_search_format_apply_roundtrip_preserves_content() {
     let matcher = GrepMatcher::compile("func").unwrap().with_context(2);
     let walker = SimpleWalker::new(vec![test_file.clone()]);
     let searcher = Searcher::new(fs.clone(), matcher, walker);
-    let result = searcher.search_all().unwrap();
+    let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+    let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).cloned().collect();
 
     // Convert matches to Format
-    let mut format = Format::from_matches(&result.matches);
+    let mut format = Format::from_matches(&all_matches);
 
     // Apply the format back to the file (no modifications)
     apply_format_to_fs(&mut format, &mut fs.clone()).unwrap();

@@ -93,45 +93,37 @@ impl ExecuteConfig {
 ///
 /// # Returns
 ///
-/// * `Ok(SearchResult)` - Results containing all matches found
+/// * `Ok(Execute)` - An Execute instance that can be used to perform searches
 /// * `Err(ExecuteError)` - Error describing what went wrong
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - The regex pattern is invalid (`ExecuteError::PatternError`)
-/// - File read errors occur during search (`ExecuteError::SearchError`)
-///
-/// # Example
-///
-/// ```no_run
-/// use bulked::{execute, ExecuteConfig};
-///
-/// let config = ExecuteConfig::new("EXAMPLE", ".")
-///     .with_context_lines(5)
-///     .with_respect_gitignore(true);
-///
-/// match execute(&config) {
-///     Ok(result) => {
-///         println!("Found {} matches", result.matches.len());
-///     }
-///     Err(e) => {
-///         eprintln!("Error: {}", e);
-///     }
-/// }
-/// ```
-pub fn execute(config: &ExecuteConfig) -> Result<SearchResult, ExecuteError> {
-    // Create production adapters
-    let fs = PhysicalFS::new();
+/// - Walker initialization fails (`ExecuteError::SearchError`)
+pub struct Execute {
+    searcher: Searcher<PhysicalFS, GrepMatcher, IgnoreWalker>,
+}
 
-    let matcher = GrepMatcher::compile(&config.pattern)?.with_context(config.context_lines);
+impl Execute {
+    pub fn new(config: &ExecuteConfig) -> Result<Self, ExecuteError> {
+        // Create production adapters
+        let fs = PhysicalFS::new();
 
-    let walker = IgnoreWalker::new(&config.path, config.respect_gitignore, config.hidden);
+        let matcher = GrepMatcher::compile(&config.pattern)?.with_context(config.context_lines);
 
-    // Execute search
-    let searcher = Searcher::new(fs, matcher, walker);
+        let walker = IgnoreWalker::new(&config.path, config.respect_gitignore, config.hidden);
 
-    Ok(searcher.search_all()?)
+        Ok(Self {
+            searcher: Searcher::new(fs, matcher, walker),
+        })
+    }
+
+    pub fn search_iter(&self) -> impl Iterator<Item = Result<SearchResult, ExecuteError>> {
+        self.searcher
+            .search_all()
+            .map(|result| result.map_err(|e| ExecuteError::SearchError { source: e }))
+    }
 }
 
 #[cfg(test)]
@@ -173,21 +165,11 @@ mod tests {
 
         // Execute search using Searcher directly
         let searcher = Searcher::new(fs, matcher, walker);
-        let result = searcher.search_all().unwrap();
+        let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
 
-        assert_eq!(result.matches.len(), 1);
-        assert_eq!(result.matches[0].line_number, 2);
-        assert_eq!(result.matches[0].line_content, "TARGET\n");
-    }
-
-    #[test]
-    fn test_execute_with_invalid_pattern() {
-        let config = ExecuteConfig::new("[invalid", ".");
-        let result = execute(&config);
-
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, ExecuteError::PatternError { .. }));
-        assert!(err.to_string().contains("Invalid regex pattern"));
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].matches.len(), 1);
+        assert_eq!(results[0].matches[0].line_number, 2);
+        assert_eq!(results[0].matches[0].line_content, "TARGET\n");
     }
 }

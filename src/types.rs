@@ -91,21 +91,6 @@ pub enum SearchError {
         #[from]
         source: MatcherError,
     },
-
-    /// Multiple errors occurred during search
-    #[error("{} errors occurred during search", .0.len())]
-    Multiple(Vec<SearchError>),
-}
-
-impl SearchError {
-    /// Create a multiple error from a vector of errors
-    pub fn from_errors(errors: Vec<SearchError>) -> Self {
-        match errors.len() {
-            0 => panic!("Cannot create SearchError::Multiple from empty vector"),
-            1 => errors.into_iter().next().unwrap(),
-            _ => SearchError::Multiple(errors),
-        }
-    }
 }
 
 /// Result of a search operation
@@ -125,6 +110,7 @@ impl SearchResult {
     }
 
     /// Add a match to the result
+    #[cfg(test)]
     pub fn add_match(&mut self, match_result: MatchResult) {
         self.matches.push(match_result);
     }
@@ -162,38 +148,5 @@ mod tests {
         result.add_match(match_result.clone());
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.matches[0], match_result);
-    }
-
-    #[test]
-    fn test_search_error_from_errors() {
-        use crate::filesystem::FilesystemError;
-
-        let error1 = SearchError::FileReadError {
-            source: FilesystemError::FileNotFound {
-                path: PathBuf::from("/test1"),
-            },
-        };
-        // Single error should unwrap
-        let single = SearchError::from_errors(vec![error1]);
-        assert!(matches!(single, SearchError::FileReadError { .. }));
-
-        // Multiple errors should wrap
-        let error2 = SearchError::FileReadError {
-            source: FilesystemError::FileNotFound {
-                path: PathBuf::from("/test2"),
-            },
-        };
-        let error3 = SearchError::FileReadError {
-            source: FilesystemError::FileNotFound {
-                path: PathBuf::from("/test3"),
-            },
-        };
-        let multiple = SearchError::from_errors(vec![error2, error3]);
-        match multiple {
-            SearchError::Multiple(errors) => {
-                assert_eq!(errors.len(), 2);
-            }
-            _ => panic!("Expected Multiple variant"),
-        }
     }
 }

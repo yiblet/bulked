@@ -106,30 +106,14 @@ where
     ///
     /// Returns `Ok(SearchResult)` with all matches if successful, or `Err(SearchError)`
     /// if any errors occurred. If multiple files had errors, returns `SearchError::Multiple`.
-    pub fn search_all(&self) -> Result<SearchResult, SearchError> {
-        let mut result = SearchResult::new();
-        let mut errors = Vec::new();
-
-        for path in self.walker.files() {
-            match self.search_file(&path) {
-                Ok(matches) => {
-                    for m in matches {
-                        result.add_match(m);
-                    }
-                }
-                Err(err) => {
-                    // Log errors but continue searching
-                    tracing::warn!("Search error: {}", err);
-                    errors.push(err);
-                }
-            }
-        }
-
-        if errors.is_empty() {
-            Ok(result)
-        } else {
-            Err(SearchError::from_errors(errors))
-        }
+    pub fn search_all(&self) -> impl Iterator<Item = Result<SearchResult, SearchError>> + '_ {
+        self.walker
+            .files()
+            .filter_map(move |path| match self.search_file(&path) {
+                Err(err) => Some(Err(err)),
+                Ok(matches) if matches.is_empty() => None,
+                Ok(matches) => Some(Ok(SearchResult { matches })),
+            })
     }
 }
 
@@ -156,7 +140,7 @@ mod tests {
         stub_matcher.add_match(crate::matcher::MatchInfo {
             line_num: 2,
             byte_offset: 7,
-	    line_match: None,
+            line_match: None,
             line_content: "TARGET line\n".to_string(),
             previous_lines: String::new(),
             next_lines: String::new(),
@@ -168,7 +152,9 @@ mod tests {
         let searcher = Searcher::new(fs, stub_matcher, walker);
 
         // Execute search
-        let result = searcher.search_all().unwrap();
+        let results: Vec<_> = searcher.search_all().collect();
+        assert_eq!(results.len(), 1);
+        let result = results[0].as_ref().unwrap();
 
         // Assertions
         assert_eq!(result.matches.len(), 1);
@@ -201,14 +187,15 @@ mod tests {
         let searcher = Searcher::new(fs, matcher, walker);
 
         // Execute search
-        let result = searcher.search_all().unwrap();
+        let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+        let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
 
         // Should find "hello" in both files
-        assert_eq!(result.matches.len(), 3); // main.rs line 2, lib.rs lines 1 and 2
+        assert_eq!(all_matches.len(), 3); // main.rs line 2, lib.rs lines 1 and 2
 
         // Check that matches are from both files
         let files_with_matches: std::collections::HashSet<_> =
-            result.matches.iter().map(|m| &m.file_path).collect();
+            all_matches.iter().map(|m| &m.file_path).collect();
         assert!(files_with_matches.contains(&file1));
         assert!(files_with_matches.contains(&file2));
     }
@@ -229,11 +216,12 @@ mod tests {
         let walker = SimpleWalker::new(vec![binary_file.clone(), text_file.clone()]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let result = searcher.search_all().unwrap();
+        let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+        let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
 
         // Should find match in text file only
-        assert_eq!(result.matches.len(), 1);
-        assert_eq!(result.matches[0].file_path, text_file);
+        assert_eq!(all_matches.len(), 1);
+        assert_eq!(all_matches[0].file_path, text_file);
 
         // Binary file is silently skipped by GrepMatcher (no error, no matches)
     }
@@ -248,13 +236,14 @@ mod tests {
         let walker = SimpleWalker::new(vec![nonexistent.clone()]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let result = searcher.search_all();
+        let results: Vec<_> = searcher.search_all().collect();
 
         // Should return an error for nonexistent file
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            SearchError::FileReadError { .. } => {
-                // Expected single error
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_err());
+        match &results[0] {
+            Err(SearchError::FileReadError { .. }) => {
+                // Expected error
             }
             _ => panic!("Expected FileReadError"),
         }
@@ -271,9 +260,9 @@ mod tests {
         let walker = SimpleWalker::new(vec![file]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let result = searcher.search_all().unwrap();
+        let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
 
-        assert_eq!(result.matches.len(), 0);
+        assert_eq!(results.len(), 0);
     }
 
     /// Test Searcher with context extraction (Phase 2)
@@ -288,10 +277,11 @@ mod tests {
         let walker = SimpleWalker::new(vec![file.clone()]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let result = searcher.search_all().unwrap();
+        let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
 
-        assert_eq!(result.matches.len(), 1);
-        let m = &result.matches[0];
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].matches.len(), 1);
+        let m = &results[0].matches[0];
 
         // Verify match details
         assert_eq!(m.file_path, file);
