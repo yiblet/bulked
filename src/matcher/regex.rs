@@ -46,6 +46,7 @@ mod sink {
                 Ok(matched) => matched,
                 Err(err) => return Err(io::Error::error_message(err)),
             };
+
             let Some(line_number) = mat.line_number() else {
                 let msg = "line numbers not enabled";
                 return Err(io::Error::error_message(msg));
@@ -58,7 +59,7 @@ mod sink {
             self.0.push(MatchInfo {
                 line_num: line_number as usize,
                 byte_offset: byte_offset as usize,
-                line_content: matched.trim_end().to_string(),
+                line_content: matched.to_string(),
                 previous_lines: prev,
                 next_lines: String::new(),
             });
@@ -212,10 +213,10 @@ mod tests {
         assert_eq!(matches.len(), 2);
 
         assert_eq!(matches[0].line_num, 2);
-        assert_eq!(matches[0].line_content, "this is a match");
+        assert_eq!(matches[0].line_content, "this is a match\n");
 
         assert_eq!(matches[1].line_num, 4);
-        assert_eq!(matches[1].line_content, "another match here");
+        assert_eq!(matches[1].line_content, "another match here\n");
     }
 
     #[test]
@@ -260,7 +261,7 @@ mod tests {
 
         let m = &matches[0];
         assert_eq!(m.line_num, 5, "Match should be on line 5");
-        assert_eq!(m.line_content, "MATCH line 5");
+        assert_eq!(m.line_content, "MATCH line 5\n");
 
         // Check context before (lines 2, 3, 4)
         let before_lines: Vec<&str> = m.previous_lines.split_inclusive('\n').collect();

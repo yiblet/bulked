@@ -119,7 +119,7 @@ mod tests {
         matcher.add_match(MatchInfo {
             line_num: 5,
             byte_offset: 42,
-            line_content: "test line".to_string(),
+            line_content: "test line\n".to_string(),
             previous_lines: String::new(),
             next_lines: String::new(),
         });
@@ -129,7 +129,7 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].line_num, 5);
         assert_eq!(matches[0].byte_offset, 42);
-        assert_eq!(matches[0].line_content, "test line");
+        assert_eq!(matches[0].line_content, "test line\n");
     }
 
     #[test]
@@ -138,14 +138,14 @@ mod tests {
         matcher.add_match(MatchInfo {
             line_num: 1,
             byte_offset: 0,
-            line_content: "first".to_string(),
+            line_content: "first\n".to_string(),
             previous_lines: String::new(),
             next_lines: String::new(),
         });
         matcher.add_match(MatchInfo {
             line_num: 2,
             byte_offset: 10,
-            line_content: "second".to_string(),
+            line_content: "second\n".to_string(),
             previous_lines: String::new(),
             next_lines: String::new(),
         });
@@ -153,8 +153,8 @@ mod tests {
         let matches = matcher.search_in_content("ignored");
 
         assert_eq!(matches.len(), 2);
-        assert_eq!(matches[0].line_content, "first");
-        assert_eq!(matches[1].line_content, "second");
+        assert_eq!(matches[0].line_content, "first\n");
+        assert_eq!(matches[1].line_content, "second\n");
     }
 
     #[test]

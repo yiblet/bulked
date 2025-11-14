@@ -153,7 +153,6 @@ impl Format {
 
                 // Add the match line (needs '\n' added)
                 content.push_str(&match_result.line_content);
-                content.push('\n');
 
                 // Add context after (each already has '\n')
                 for ctx in &match_result.context_after {

@@ -177,7 +177,7 @@ mod tests {
 
         assert_eq!(result.matches.len(), 1);
         assert_eq!(result.matches[0].line_number, 2);
-        assert_eq!(result.matches[0].line_content, "TARGET");
+        assert_eq!(result.matches[0].line_content, "TARGET\n");
     }
 
     #[test]

@@ -116,7 +116,7 @@ mod tests {
         matcher.add_match(MatchInfo {
             line_num: 10,
             byte_offset: 100,
-            line_content: "test line".to_string(),
+            line_content: "test line\n".to_string(),
             previous_lines: String::new(),
             next_lines: String::new(),
         });
@@ -125,6 +125,6 @@ mod tests {
 
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].line_num, 10);
-        assert_eq!(matches[0].line_content, "test line");
+        assert_eq!(matches[0].line_content, "test line\n");
     }
 }

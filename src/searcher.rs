@@ -156,7 +156,7 @@ mod tests {
         stub_matcher.add_match(crate::matcher::MatchInfo {
             line_num: 2,
             byte_offset: 7,
-            line_content: "TARGET line".to_string(),
+            line_content: "TARGET line\n".to_string(),
             previous_lines: String::new(),
             next_lines: String::new(),
         });
@@ -175,7 +175,7 @@ mod tests {
         let match_result = &result.matches[0];
         assert_eq!(match_result.file_path, test_path);
         assert_eq!(match_result.line_number, 2);
-        assert_eq!(match_result.line_content, "TARGET line");
+        assert_eq!(match_result.line_content, "TARGET line\n");
     }
 
     /// Test Searcher with real `GrepMatcher` and `MemoryFS` (sociable integration test)
