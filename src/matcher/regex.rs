@@ -60,6 +60,7 @@ mod sink {
                 line_num: line_number as usize,
                 byte_offset: byte_offset as usize,
                 line_content: matched.to_string(),
+	    	line_match: None,
                 previous_lines: prev,
                 next_lines: String::new(),
             });
@@ -171,6 +172,14 @@ impl Matcher for GrepMatcher {
             searcher
                 .search_path(&self.matcher, path, sink::UTF8::new(&mut matches))
                 .map_err(|source| MatcherError::SearchError { source })?;
+
+            for cur_match in &mut matches {
+                let Ok(Some(m)) = self.matcher.find_at(cur_match.line_content.as_bytes(), 0) else {
+                    continue;
+                };
+
+                cur_match.line_match = Some(m.start()..m.end());
+            }
 
             Ok(matches)
         })

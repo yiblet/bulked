@@ -156,6 +156,7 @@ mod tests {
         stub_matcher.add_match(crate::matcher::MatchInfo {
             line_num: 2,
             byte_offset: 7,
+	    line_match: None,
             line_content: "TARGET line\n".to_string(),
             previous_lines: String::new(),
             next_lines: String::new(),

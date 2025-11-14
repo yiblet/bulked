@@ -190,7 +190,7 @@ fn chunk_parser(input: &str) -> ParseResult<'_, Chunk> {
             path,
             line_number,
             numlines,
-            unescaped_content,
+            unescaped_content.to_string(),
             no_newline_eol,
         ),
     ))

@@ -32,6 +32,8 @@ pub(super) struct SearchArgs {
 }
 
 pub(super) fn handle_search(args: SearchArgs) -> Result<(), String> {
+    let is_tty = atty::is(atty::Stream::Stdout);
+
     // Configure and execute search
     let config = ExecuteConfig::new(args.pattern, args.path)
         .with_context_lines(args.context)
@@ -47,15 +49,36 @@ pub(super) fn handle_search(args: SearchArgs) -> Result<(), String> {
 
             // Context before
             for ctx in &m.context_before {
-                println!("  {:4} │ {}", ctx.line_number, ctx.content);
+                print!("  {:4} │ {}", ctx.line_number, ctx.content);
             }
 
-            // Match line (highlighted with >)
-            println!("  {:4} > {}", m.line_number, m.line_content);
+            let (start_red, end_red) = if is_tty {
+                let start_red = "\x1b[31m";
+                let end_red = "\x1b[0m";
+                (start_red, end_red)
+            } else {
+                ("", "")
+            };
+
+            if let Some(range) = &m.line_match {
+                // Highlight match
+                print!(
+                    "  {:4} > {}{}{}{}{}",
+                    m.line_number,
+                    m.line_content.get(..range.start).unwrap_or_default(),
+                    start_red,
+                    &m.line_content[range.clone()],
+                    end_red,
+                    m.line_content.get(range.end..).unwrap_or_default()
+                );
+            } else {
+                // Match line (highlighted with >)
+                print!("  {:4} > {}", m.line_number, m.line_content);
+            }
 
             // Context after
             for ctx in &m.context_after {
-                println!("  {:4} │ {}", ctx.line_number, ctx.content);
+                print!("  {:4} │ {}", ctx.line_number, ctx.content);
             }
         }
         // Summary

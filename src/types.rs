@@ -18,6 +18,10 @@ pub struct MatchResult {
     pub line_number: usize,
     /// Content of the line containing the match
     pub line_content: String,
+
+    /// Line match range (if any)
+    pub line_match: Option<std::ops::Range<usize>>,
+
     /// Byte offset of the match within the file
     pub byte_offset: usize,
     /// Context lines before the match (added in Phase 2)
@@ -32,6 +36,7 @@ impl MatchResult {
         Self {
             file_path: path,
             line_number: match_info.line_num,
+            line_match: match_info.line_match,
             line_content: match_info.line_content,
             byte_offset: match_info.byte_offset,
             context_before: {
@@ -149,6 +154,7 @@ mod tests {
             file_path: PathBuf::from("/test/file.txt"),
             line_number: 42,
             line_content: "test line".to_string(),
+            line_match: None,
             byte_offset: 100,
             context_before: vec![],
             context_after: vec![],

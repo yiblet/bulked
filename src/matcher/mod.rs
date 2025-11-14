@@ -42,6 +42,8 @@ pub struct MatchInfo {
     /// Content of the line containing the match
     pub line_content: String,
 
+    pub line_match: Option<std::ops::Range<usize>>,
+
     pub previous_lines: String,
 
     pub next_lines: String,
@@ -117,6 +119,7 @@ mod tests {
             line_num: 10,
             byte_offset: 100,
             line_content: "test line\n".to_string(),
+	    line_match: None,
             previous_lines: String::new(),
             next_lines: String::new(),
         });
