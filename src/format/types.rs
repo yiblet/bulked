@@ -174,7 +174,9 @@ impl Format {
             })
             .collect();
 
-        Self(chunks)
+        let mut res = Self(chunks);
+        res.sort();
+        res
     }
 
     fn sort(&mut self) {
