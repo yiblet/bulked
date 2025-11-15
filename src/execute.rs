@@ -165,7 +165,10 @@ mod tests {
 
         // Execute search using Searcher directly
         let searcher = Searcher::new(fs, matcher, walker);
-        let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+        let results: Vec<_> = searcher
+            .search_all()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].matches.len(), 1);

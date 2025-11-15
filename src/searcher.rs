@@ -187,7 +187,10 @@ mod tests {
         let searcher = Searcher::new(fs, matcher, walker);
 
         // Execute search
-        let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+        let results: Vec<_> = searcher
+            .search_all()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
 
         // Should find "hello" in both files
@@ -216,7 +219,10 @@ mod tests {
         let walker = SimpleWalker::new(vec![binary_file.clone(), text_file.clone()]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+        let results: Vec<_> = searcher
+            .search_all()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
         let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
 
         // Should find match in text file only
@@ -260,7 +266,10 @@ mod tests {
         let walker = SimpleWalker::new(vec![file]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+        let results: Vec<_> = searcher
+            .search_all()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
 
         assert_eq!(results.len(), 0);
     }
@@ -277,7 +286,10 @@ mod tests {
         let walker = SimpleWalker::new(vec![file.clone()]);
 
         let searcher = Searcher::new(fs, matcher, walker);
-        let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+        let results: Vec<_> = searcher
+            .search_all()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].matches.len(), 1);

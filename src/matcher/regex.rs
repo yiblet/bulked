@@ -60,7 +60,7 @@ mod sink {
                 line_num: line_number as usize,
                 byte_offset: byte_offset as usize,
                 line_content: matched.to_string(),
-	    	line_match: None,
+                line_match: None,
                 previous_lines: prev,
                 next_lines: String::new(),
             });

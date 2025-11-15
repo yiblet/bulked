@@ -256,12 +256,7 @@ mod tests {
         let content = "line1\nline2\nline3\nline4\nline5";
         let chunks = vec![
             Chunk::new(PathBuf::from("test.txt"), 1, 1, "mod1\n".to_string()),
-            Chunk::new(
-                PathBuf::from("test.txt"),
-                4,
-                2,
-                "mod4\nmod5\n".to_string(),
-            ),
+            Chunk::new(PathBuf::from("test.txt"), 4, 2, "mod4\nmod5\n".to_string()),
         ];
         let result = apply_format(&chunks, content).unwrap();
         assert_eq!(result, "mod1\nline2\nline3\nmod4\nmod5\n");
@@ -297,18 +292,8 @@ mod tests {
     fn test_apply_mixed_paths_error() {
         let content = "line1\nline2";
         let chunks = vec![
-            Chunk::new(
-                PathBuf::from("test1.txt"),
-                1,
-                1,
-                "mod1\n".to_string(),
-            ),
-            Chunk::new(
-                PathBuf::from("test2.txt"),
-                2,
-                1,
-                "mod2\n".to_string(),
-            ),
+            Chunk::new(PathBuf::from("test1.txt"), 1, 1, "mod1\n".to_string()),
+            Chunk::new(PathBuf::from("test2.txt"), 2, 1, "mod2\n".to_string()),
         ];
         let result = apply_format(&chunks, content);
         assert!(matches!(result, Err(ApplyError::MixedPaths)));

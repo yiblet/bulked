@@ -120,7 +120,7 @@ mod tests {
             line_num: 5,
             byte_offset: 42,
             line_content: "test line\n".to_string(),
-	    line_match: None,
+            line_match: None,
             previous_lines: String::new(),
             next_lines: String::new(),
         });
@@ -140,7 +140,7 @@ mod tests {
             line_num: 1,
             byte_offset: 0,
             line_content: "first\n".to_string(),
-	    line_match: None,
+            line_match: None,
             previous_lines: String::new(),
             next_lines: String::new(),
         });
@@ -148,7 +148,7 @@ mod tests {
             line_num: 2,
             byte_offset: 10,
             line_content: "second\n".to_string(),
-	    line_match: None,
+            line_match: None,
             previous_lines: String::new(),
             next_lines: String::new(),
         });

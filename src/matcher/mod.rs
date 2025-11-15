@@ -119,7 +119,7 @@ mod tests {
             line_num: 10,
             byte_offset: 100,
             line_content: "test line\n".to_string(),
-	    line_match: None,
+            line_match: None,
             previous_lines: String::new(),
             next_lines: String::new(),
         });

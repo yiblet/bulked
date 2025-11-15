@@ -40,7 +40,10 @@ fn test_full_stack_integration() {
     ]);
 
     let searcher = Searcher::new(fs, matcher, walker);
-    let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+    let results: Vec<_> = searcher
+        .search_all()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
 
     // Should find "fn " in both .rs files
@@ -114,7 +117,10 @@ fn test_bulked_search_with_context() {
     ]);
 
     let searcher = Searcher::new(fs, matcher, walker);
-    let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+    let results: Vec<_> = searcher
+        .search_all()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
 
     // Verify correct number of matches (2 matches in non-ignored files)
@@ -207,7 +213,10 @@ fn test_search_format_apply_roundtrip_preserves_content() {
     let matcher = GrepMatcher::compile("func").unwrap().with_context(2);
     let walker = SimpleWalker::new(vec![test_file.clone()]);
     let searcher = Searcher::new(fs.clone(), matcher, walker);
-    let results: Vec<_> = searcher.search_all().collect::<Result<Vec<_>, _>>().unwrap();
+    let results: Vec<_> = searcher
+        .search_all()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
     let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).cloned().collect();
 
     // Convert matches to Format
@@ -224,4 +233,3 @@ fn test_search_format_apply_roundtrip_preserves_content() {
         original_content, final_content
     );
 }
-
