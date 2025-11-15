@@ -151,6 +151,11 @@ impl Format {
                     content.push_str(&ctx.content);
                 }
 
+                let range = match_result
+                    .line_match
+                    .as_ref()
+                    .map(|range| range.start + content.len()..range.end + content.len());
+
                 // Add the match line (needs '\n' added)
                 content.push_str(&match_result.line_content);
 
@@ -169,8 +174,9 @@ impl Format {
                     start_line,
                     num_lines,
                     content,
-                    no_newline_eol,
                 )
+                .with_no_newline_eol(no_newline_eol)
+                .with_match_range(range)
             })
             .collect();
 
@@ -239,6 +245,11 @@ impl Format {
 
         res
     }
+
+    #[must_use]
+    pub fn highlight(&self) -> HighlightedDisplay<'_> {
+        HighlightedDisplay(self)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -256,24 +267,30 @@ pub struct Chunk {
     pub num_lines: usize,
     pub content: String,
     pub no_newline_eol: bool,
+    pub match_range: Option<std::ops::Range<usize>>,
 }
 
 impl Chunk {
     /// Creates a new Chunk with the given path, start line, number of lines, and content.
-    pub fn new(
-        path: PathBuf,
-        start_line: usize,
-        num_lines: usize,
-        content: String,
-        no_newline_eol: bool,
-    ) -> Self {
+    pub fn new(path: PathBuf, start_line: usize, num_lines: usize, content: String) -> Self {
         Self {
             path,
             start_line,
             num_lines,
             content,
-            no_newline_eol,
+            no_newline_eol: false,
+            match_range: None,
         }
+    }
+
+    pub fn with_no_newline_eol(mut self, no_newline_eol: bool) -> Self {
+        self.no_newline_eol = no_newline_eol;
+        self
+    }
+
+    pub fn with_match_range(mut self, match_range: Option<std::ops::Range<usize>>) -> Self {
+        self.match_range = match_range;
+        self
     }
 
     #[must_use]
@@ -399,39 +416,69 @@ impl Chunk {
     }
 }
 
-impl fmt::Display for Format {
-    /// Serializes the Format to the file format string.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (idx, chunk) in self.0.iter().enumerate() {
-            if idx != 0 {
-                f.write_str("\n")?;
-            };
+pub struct HighlightedDisplay<'a>(pub &'a Format);
 
-            // Start delimiter: @path:line:numlines
-            writeln!(
-                f,
-                "@{}:{}:{}",
-                chunk.path.display(),
-                chunk.start_line,
-                chunk.num_lines
-            )?;
+fn display_format(f: &mut fmt::Formatter, format: &Format, highlight: bool) -> std::fmt::Result {
+    for (idx, chunk) in format.0.iter().enumerate() {
+        if idx != 0 {
+            f.write_str("\n")?;
+        };
 
-            // Escaped content (content already has trailing newline, don't add another)
-            write!(
-                f,
-                "{}",
-                crate::format::escaping::escape_content(&chunk.content)
-            )?;
+        // Start delimiter: @path:line:numlines
+        writeln!(
+            f,
+            "@{}:{}:{}",
+            chunk.path.display(),
+            chunk.start_line,
+            chunk.num_lines
+        )?;
 
-            if chunk.no_newline_eol {
-                writeln!(f, "\n@@@-")?;
-            } else {
-                // End delimiter
-                writeln!(f, "@@@")?;
+        match &chunk.match_range {
+            Some(range) if highlight => {
+                let start_red = "\x1b[31m";
+                let end_red = "\x1b[0m";
+                write!(
+                    f,
+                    "{}{}{}{}{}",
+                    crate::format::escaping::escape_content(&chunk.content[..range.start]),
+                    start_red,
+                    crate::format::escaping::escape_content(&chunk.content[range.clone()]),
+                    end_red,
+                    crate::format::escaping::escape_content(&chunk.content[range.end..])
+                )?;
+            }
+            _ => {
+                // Escaped content (content already has trailing newline, don't add another)
+                write!(
+                    f,
+                    "{}",
+                    crate::format::escaping::escape_content(&chunk.content)
+                )?;
             }
         }
 
-        Ok(())
+        if chunk.no_newline_eol {
+            writeln!(f, "\n@@@-")?;
+        } else {
+            // End delimiter
+            writeln!(f, "@@@")?;
+        }
+    }
+
+    Ok(())
+}
+
+impl fmt::Display for HighlightedDisplay<'_> {
+    /// Serializes the Format to the file format string.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        display_format(f, self.0, true)
+    }
+}
+
+impl fmt::Display for Format {
+    /// Serializes the Format to the file format string.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        display_format(f, self, false)
     }
 }
 
@@ -455,13 +502,7 @@ mod tests {
 
     #[test]
     fn test_chunk_new() {
-        let chunk = Chunk::new(
-            PathBuf::from("test.txt"),
-            42,
-            1,
-            "test content".to_string(),
-            false,
-        );
+        let chunk = Chunk::new(PathBuf::from("test.txt"), 42, 1, "test content".to_string());
         assert_eq!(chunk.start_line, 42);
         assert_eq!(chunk.num_lines, 1);
         assert_eq!(chunk.content, "test content");
@@ -475,7 +516,6 @@ mod tests {
             10,
             3,
             "fn main() {\n    println!(\"Hello\");\n}".to_string(),
-            false,
         )]);
 
         let output = format.to_string();
@@ -487,14 +527,8 @@ mod tests {
     #[test]
     fn test_format_to_string_multiple_chunks() {
         let format = Format(vec![
-            Chunk::new(PathBuf::from("test.txt"), 5, 1, "line 5".to_string(), false),
-            Chunk::new(
-                PathBuf::from("test.txt"),
-                10,
-                1,
-                "line 10".to_string(),
-                false,
-            ),
+            Chunk::new(PathBuf::from("test.txt"), 5, 1, "line 5".to_string()),
+            Chunk::new(PathBuf::from("test.txt"), 10, 1, "line 10".to_string()),
         ]);
 
         let output = format.to_string();
@@ -513,7 +547,6 @@ mod tests {
             1,
             1,
             "user@domain.com\\path".to_string(),
-            false,
         )]);
 
         let output = format.to_string();
@@ -529,14 +562,12 @@ mod tests {
                 1,
                 3,
                 "pub fn test() {\n    // test\n}\n".to_string(),
-                false,
             ),
             Chunk::new(
                 PathBuf::from("src/lib.rs"),
                 20,
                 1,
                 "fn another() {}\n".to_string(),
-                false,
             ),
         ]);
 
@@ -559,7 +590,6 @@ mod tests {
             1,
             2,
             "@ symbol and \\ backslash\nuser@email.com\\path\\to\\file\n".to_string(),
-            false,
         )]);
 
         let serialized = original.to_string();
@@ -575,15 +605,8 @@ mod tests {
             1,
             3,
             "line1\nline2\nline3".to_string(),
-            false,
         );
-        let chunk2 = Chunk::new(
-            PathBuf::from("test.txt"),
-            4,
-            2,
-            "line4\nline5".to_string(),
-            false,
-        );
+        let chunk2 = Chunk::new(PathBuf::from("test.txt"), 4, 2, "line4\nline5".to_string());
         assert!(chunk1.can_merge(&chunk2));
     }
 
@@ -594,53 +617,27 @@ mod tests {
             1,
             4,
             "line1\nline2\nline3\nline4".to_string(),
-            false,
         );
         let chunk2 = Chunk::new(
             PathBuf::from("test.txt"),
             3,
             3,
             "line3\nline4\nline5".to_string(),
-            false,
         );
         assert!(chunk1.can_merge(&chunk2));
     }
 
     #[test]
     fn test_chunk_cannot_merge_different_paths() {
-        let chunk1 = Chunk::new(
-            PathBuf::from("test1.txt"),
-            1,
-            3,
-            "content1".to_string(),
-            false,
-        );
-        let chunk2 = Chunk::new(
-            PathBuf::from("test2.txt"),
-            1,
-            3,
-            "content2".to_string(),
-            false,
-        );
+        let chunk1 = Chunk::new(PathBuf::from("test1.txt"), 1, 3, "content1".to_string());
+        let chunk2 = Chunk::new(PathBuf::from("test2.txt"), 1, 3, "content2".to_string());
         assert!(!chunk1.can_merge(&chunk2));
     }
 
     #[test]
     fn test_chunk_cannot_merge_non_overlapping() {
-        let chunk1 = Chunk::new(
-            PathBuf::from("test.txt"),
-            1,
-            3,
-            "content1".to_string(),
-            false,
-        );
-        let chunk2 = Chunk::new(
-            PathBuf::from("test.txt"),
-            5,
-            3,
-            "content2".to_string(),
-            false,
-        );
+        let chunk1 = Chunk::new(PathBuf::from("test.txt"), 1, 3, "content1".to_string());
+        let chunk2 = Chunk::new(PathBuf::from("test.txt"), 5, 3, "content2".to_string());
         assert!(!chunk1.can_merge(&chunk2));
     }
 
@@ -651,15 +648,8 @@ mod tests {
             1,
             3,
             "line1\nline2\nline3".to_string(),
-            false,
         );
-        let chunk2 = Chunk::new(
-            PathBuf::from("test.txt"),
-            4,
-            2,
-            "line4\nline5".to_string(),
-            false,
-        );
+        let chunk2 = Chunk::new(PathBuf::from("test.txt"), 4, 2, "line4\nline5".to_string());
 
         chunk1.merge(chunk2).unwrap();
 
@@ -675,14 +665,12 @@ mod tests {
             1,
             4,
             "line1\nline2\nline3\nline4".to_string(),
-            false,
         );
         let chunk2 = Chunk::new(
             PathBuf::from("test.txt"),
             3,
             3,
             "line3\nline4\nline5".to_string(),
-            false,
         );
 
         chunk1.merge(chunk2).unwrap();
@@ -700,15 +688,8 @@ mod tests {
             1,
             5,
             "line1\nline2\nline3\nline4\nline5".to_string(),
-            false,
         );
-        let chunk2 = Chunk::new(
-            PathBuf::from("test.txt"),
-            2,
-            2,
-            "line2\nline3".to_string(),
-            false,
-        );
+        let chunk2 = Chunk::new(PathBuf::from("test.txt"), 2, 2, "line2\nline3".to_string());
 
         chunk1.merge(chunk2).unwrap();
 
@@ -720,19 +701,12 @@ mod tests {
 
     #[test]
     fn test_chunk_merge_reverse_order() {
-        let mut chunk1 = Chunk::new(
-            PathBuf::from("test.txt"),
-            4,
-            2,
-            "line4\nline5".to_string(),
-            false,
-        );
+        let mut chunk1 = Chunk::new(PathBuf::from("test.txt"), 4, 2, "line4\nline5".to_string());
         let chunk2 = Chunk::new(
             PathBuf::from("test.txt"),
             1,
             3,
             "line1\nline2\nline3".to_string(),
-            false,
         );
 
         chunk1.merge(chunk2).unwrap();
@@ -744,20 +718,8 @@ mod tests {
 
     #[test]
     fn test_chunk_merge_returns_error_for_different_paths() {
-        let mut chunk1 = Chunk::new(
-            PathBuf::from("test1.txt"),
-            1,
-            3,
-            "content1".to_string(),
-            false,
-        );
-        let chunk2 = Chunk::new(
-            PathBuf::from("test2.txt"),
-            1,
-            3,
-            "content2".to_string(),
-            false,
-        );
+        let mut chunk1 = Chunk::new(PathBuf::from("test1.txt"), 1, 3, "content1".to_string());
+        let chunk2 = Chunk::new(PathBuf::from("test2.txt"), 1, 3, "content2".to_string());
 
         let result = chunk1.merge(chunk2);
         assert!(result.is_err());
@@ -779,7 +741,6 @@ mod tests {
             1,
             3,
             "line1\nline2\nline3".to_string(),
-            false,
         )]);
         format.merge();
         assert_eq!(format.len(), 1);
@@ -795,15 +756,8 @@ mod tests {
                 1,
                 3,
                 "line1\nline2\nline3".to_string(),
-                false,
             ),
-            Chunk::new(
-                PathBuf::from("test.txt"),
-                4,
-                2,
-                "line4\nline5".to_string(),
-                false,
-            ),
+            Chunk::new(PathBuf::from("test.txt"), 4, 2, "line4\nline5".to_string()),
         ]);
         format.merge();
         assert_eq!(format.len(), 1);
@@ -820,14 +774,12 @@ mod tests {
                 1,
                 4,
                 "line1\nline2\nline3\nline4".to_string(),
-                false,
             ),
             Chunk::new(
                 PathBuf::from("test.txt"),
                 3,
                 3,
                 "line3\nline4\nline5".to_string(),
-                false,
             ),
         ]);
         format.merge();
@@ -845,15 +797,8 @@ mod tests {
                 1,
                 3,
                 "line1\nline2\nline3".to_string(),
-                false,
             ),
-            Chunk::new(
-                PathBuf::from("test.txt"),
-                7,
-                2,
-                "line7\nline8".to_string(),
-                false,
-            ),
+            Chunk::new(PathBuf::from("test.txt"), 7, 2, "line7\nline8".to_string()),
         ]);
         format.merge();
         // Should remain 2 chunks since they can't be merged
@@ -866,27 +811,14 @@ mod tests {
     #[test]
     fn test_format_merge_unsorted_chunks() {
         let mut format = Format(vec![
-            Chunk::new(
-                PathBuf::from("test.txt"),
-                7,
-                2,
-                "line7\nline8".to_string(),
-                false,
-            ),
+            Chunk::new(PathBuf::from("test.txt"), 7, 2, "line7\nline8".to_string()),
             Chunk::new(
                 PathBuf::from("test.txt"),
                 1,
                 3,
                 "line1\nline2\nline3".to_string(),
-                false,
             ),
-            Chunk::new(
-                PathBuf::from("test.txt"),
-                4,
-                2,
-                "line4\nline5".to_string(),
-                false,
-            ),
+            Chunk::new(PathBuf::from("test.txt"), 4, 2, "line4\nline5".to_string()),
         ]);
         format.merge();
         // First and second should merge (1-3 and 4-5), third stays separate (7-8)
@@ -905,28 +837,24 @@ mod tests {
                 1,
                 2,
                 "file1 line1\nfile1 line2".to_string(),
-                false,
             ),
             Chunk::new(
                 PathBuf::from("file1.txt"),
                 3,
                 2,
                 "file1 line3\nfile1 line4".to_string(),
-                false,
             ),
             Chunk::new(
                 PathBuf::from("file2.txt"),
                 1,
                 2,
                 "file2 line1\nfile2 line2".to_string(),
-                false,
             ),
             Chunk::new(
                 PathBuf::from("file2.txt"),
                 3,
                 2,
                 "file2 line3\nfile2 line4".to_string(),
-                false,
             ),
         ]);
         format.merge();
@@ -954,34 +882,10 @@ mod tests {
     #[test]
     fn test_format_merge_all_mergeable() {
         let mut format = Format(vec![
-            Chunk::new(
-                PathBuf::from("test.txt"),
-                1,
-                2,
-                "line1\nline2".to_string(),
-                false,
-            ),
-            Chunk::new(
-                PathBuf::from("test.txt"),
-                3,
-                2,
-                "line3\nline4".to_string(),
-                false,
-            ),
-            Chunk::new(
-                PathBuf::from("test.txt"),
-                5,
-                2,
-                "line5\nline6".to_string(),
-                false,
-            ),
-            Chunk::new(
-                PathBuf::from("test.txt"),
-                7,
-                2,
-                "line7\nline8".to_string(),
-                false,
-            ),
+            Chunk::new(PathBuf::from("test.txt"), 1, 2, "line1\nline2".to_string()),
+            Chunk::new(PathBuf::from("test.txt"), 3, 2, "line3\nline4".to_string()),
+            Chunk::new(PathBuf::from("test.txt"), 5, 2, "line5\nline6".to_string()),
+            Chunk::new(PathBuf::from("test.txt"), 7, 2, "line7\nline8".to_string()),
         ]);
         format.merge();
         // All should merge into one chunk
@@ -1001,35 +905,30 @@ mod tests {
                 1,
                 2,
                 "fn main() {\n    println!(\"Hello\");".to_string(),
-                false,
             ),
             Chunk::new(
                 PathBuf::from("src/main.rs"),
                 10,
                 1,
                 "// comment".to_string(),
-                false,
             ),
             Chunk::new(
                 PathBuf::from("src/lib.rs"),
                 5,
                 3,
                 "pub fn test() {\n    // test\n}".to_string(),
-                false,
             ),
             Chunk::new(
                 PathBuf::from("src/lib.rs"),
                 20,
                 2,
                 "pub fn another() {\n}".to_string(),
-                false,
             ),
             Chunk::new(
                 PathBuf::from("tests/integration.rs"),
                 1,
                 1,
                 "#[test]".to_string(),
-                false,
             ),
         ]);
 

@@ -151,14 +151,14 @@ pub fn parse_format(src: &str) -> Result<Format, FormatError> {
     })?;
 
     // Parse all chunks
-    let (_, chunks) = many0(preceded(skip_whitespace_and_comments, chunk_parser)).parse(input).map_err(
-        |e| match e {
+    let (_, chunks) = many0(preceded(skip_whitespace_and_comments, chunk_parser))
+        .parse(input)
+        .map_err(|e| match e {
             nom::Err::Error(e) | nom::Err::Failure(e) => e.into_format_error(src),
             nom::Err::Incomplete(_) => FormatError::NoChunks {
                 src: src.to_string(),
             },
-        },
-    )?;
+        })?;
 
     if chunks.is_empty() {
         return Err(FormatError::NoChunks {
@@ -186,13 +186,8 @@ fn chunk_parser(input: &str) -> ParseResult<'_, Chunk> {
     let unescaped_content = unescape_content(&content);
     Ok((
         input,
-        Chunk::new(
-            path,
-            line_number,
-            numlines,
-            unescaped_content.to_string(),
-            no_newline_eol,
-        ),
+        Chunk::new(path, line_number, numlines, unescaped_content.to_string())
+            .with_no_newline_eol(no_newline_eol),
     ))
 }
 
@@ -293,7 +288,8 @@ fn skip_whitespace_and_comments(input: &str) -> ParseResult<'_, ()> {
             not_newline,
             newline,
         )),
-    ).parse(input)?;
+    )
+    .parse(input)?;
 
     Ok((input, ()))
 }

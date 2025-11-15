@@ -94,7 +94,12 @@ pub(super) fn handle_search(args: SearchArgs) -> Result<(), String> {
         for page in result.search_iter() {
             let result = page.map_err(|e| format!("Error: {}", e))?;
             let format = Format::from_matches(&result.matches);
-            print!("{}", &format)
+
+            if is_tty {
+                print!("{}", format.highlight())
+            } else {
+                print!("{}", &format)
+            }
         }
     };
 
