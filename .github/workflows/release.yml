@@ -21,22 +21,27 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact_name: bulked
             asset_name: bulked-linux-x86_64
+            use_cross: true
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             artifact_name: bulked
             asset_name: bulked-linux-aarch64
+            use_cross: true
+          - os: ubuntu-latest
+            target: x86_64-pc-windows-gnu
+            artifact_name: bulked.exe
+            asset_name: bulked-windows-x86_64.exe
+            use_cross: true
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: bulked
             asset_name: bulked-macos-x86_64
+            use_cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: bulked
             asset_name: bulked-macos-aarch64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_name: bulked.exe
-            asset_name: bulked-windows-x86_64.exe
+            use_cross: false
 
     steps:
       - uses: actions/checkout@v4
@@ -45,18 +50,18 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
-
-      - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Install cross
+        if: matrix.use_cross
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -83,9 +88,9 @@ jobs:
           for dir in */; do
             name=${dir%/}
             if [[ $name == *.exe ]]; then
-              zip "${name}.zip" "${name}/${name}"
+              zip "${name}.zip" "${name}/bulked.exe"
             else
-              tar czf "${name}.tar.gz" -C "${name}" "${name##*/bulked-*}"
+              tar czf "${name}.tar.gz" -C "${name}" "bulked"
             fi
           done
 
