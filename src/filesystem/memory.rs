@@ -71,6 +71,12 @@ impl FileSystem for MemoryFS {
         None
     }
 
+    fn read(&self, path: &Path) -> Result<Box<dyn std::io::Read>, FilesystemError> {
+        let st = self.read_to_string(path)?;
+        let vec = Vec::from(st);
+        Ok(Box::new(std::io::Cursor::new(vec)))
+    }
+
     fn read_to_string(&self, path: &Path) -> Result<String, FilesystemError> {
         let files = self.files.read().map_err(|_| FilesystemError::LockError)?;
 

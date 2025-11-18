@@ -66,6 +66,8 @@ pub trait FileSystem: Send + Sync {
     /// Returns an error if the file doesn't exist, isn't readable, or contains invalid UTF-8.
     fn read_to_string(&self, path: &Path) -> Result<String, FilesystemError>;
 
+    fn read(&self, path: &Path) -> Result<Box<dyn std::io::Read>, FilesystemError>;
+
     fn write_string(&self, path: &Path, content: &str) -> Result<(), FilesystemError>;
 
     fn as_real_path<'a>(&self, path: &'a Path) -> Option<Cow<'a, Path>>;

@@ -9,6 +9,14 @@ use thiserror::Error;
 use crate::filesystem::FilesystemError;
 use crate::matcher::{MatchInfo, MatcherError};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestInput {
+    pub file_path: PathBuf,
+    pub line_number: usize,
+    // TODO: add support for context messages
+    // pub message: String,
+}
+
 /// A single match result from searching a file
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchResult {

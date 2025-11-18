@@ -247,8 +247,12 @@ impl Format {
     }
 
     #[must_use]
-    pub fn highlight(&self) -> HighlightedDisplay<'_> {
-        HighlightedDisplay(self)
+    pub fn display(&self, plain: bool, highlight: bool) -> Display<'_> {
+        Display {
+            format: self,
+            plain,
+            highlight,
+        }
     }
 }
 
@@ -416,7 +420,11 @@ impl Chunk {
     }
 }
 
-pub struct HighlightedDisplay<'a>(pub &'a Format);
+pub struct Display<'a> {
+    pub format: &'a Format,
+    pub plain: bool,
+    pub highlight: bool,
+}
 
 fn display_format(f: &mut fmt::Formatter, format: &Format, highlight: bool) -> std::fmt::Result {
     for (idx, chunk) in format.0.iter().enumerate() {
@@ -468,10 +476,58 @@ fn display_format(f: &mut fmt::Formatter, format: &Format, highlight: bool) -> s
     Ok(())
 }
 
-impl fmt::Display for HighlightedDisplay<'_> {
+fn display_plain(f: &mut fmt::Formatter, format: &Format, highlight: bool) -> std::fmt::Result {
+    for chunk in format.0.iter() {
+        writeln!(f, "\n{}:{}", chunk.path.display(), chunk.start_line)?;
+        let mut line_no = chunk.start_line;
+        let mut bytes = 0;
+        for line in chunk.content.split_inclusive('\n') {
+            let start = bytes;
+            let end = bytes + line.len();
+            match chunk.match_range.as_ref() {
+                Some(range) if start <= range.start && end > range.end => {
+                    if highlight {
+                        let start_red = "\x1b[31m";
+                        let end_red = "\x1b[0m";
+
+                        let line_start = range.start - start;
+                        let line_end = range.end - start;
+
+                        write!(
+                            f,
+                            "  {:4} > {}{}{}{}{}",
+                            line_no,
+                            line.get(..line_start).unwrap_or_default(),
+                            start_red,
+                            &line[line_start..line_end],
+                            end_red,
+                            line.get(line_end..).unwrap_or_default()
+                        )?;
+                    } else {
+                        write!(f, "  {:4} > {}", line_no, line)?;
+                    }
+                }
+                _ => {
+                    write!(f, "  {:4} | {}", line_no, line)?;
+                }
+            }
+
+            line_no += 1;
+            bytes += line.len();
+        }
+    }
+
+    Ok(())
+}
+
+impl fmt::Display for Display<'_> {
     /// Serializes the Format to the file format string.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        display_format(f, self.0, true)
+        if self.plain {
+            display_plain(f, self.format, self.highlight)
+        } else {
+            display_format(f, self.format, self.highlight)
+        }
     }
 }
 

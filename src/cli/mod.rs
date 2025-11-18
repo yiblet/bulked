@@ -3,8 +3,8 @@ use clap::{Parser, Subcommand};
 mod apply;
 mod search;
 
-use self::apply::{ApplyArgs, handle_apply};
-use self::search::{SearchArgs, handle_search};
+use self::apply::ApplyArgs;
+use self::search::SearchArgs;
 
 /// Bulked - Search and modify code with context
 ///
@@ -45,7 +45,7 @@ pub fn run() -> Result<(), String> {
     }
 
     match cli.command {
-        Command::Search(args) => handle_search(args),
-        Command::Apply(args) => handle_apply(args),
+        Command::Search(args) => args.handle(),
+        Command::Apply(args) => args.handle(),
     }
 }

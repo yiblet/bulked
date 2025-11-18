@@ -18,56 +18,58 @@ pub(super) struct ApplyArgs {
     dry_run: bool,
 }
 
-pub(super) fn handle_apply(args: ApplyArgs) -> Result<(), String> {
-    // Read format from input file or stdin
-    let input = match args.input {
-        Some(path) => match std::fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(e) => {
-                return Err(format!("Error reading file '{}': {}", path.display(), e));
-            }
-        },
-        None => {
-            let mut buffer = String::new();
-            match io::stdin().read_to_string(&mut buffer) {
-                Ok(_) => buffer,
+impl ApplyArgs {
+    pub fn handle(self) -> Result<(), String> {
+        // Read format from input file or stdin
+        let input = match self.input {
+            Some(path) => match std::fs::read_to_string(&path) {
+                Ok(content) => content,
                 Err(e) => {
-                    return Err(format!("Error reading from stdin: {}", e));
+                    return Err(format!("Error reading file '{}': {}", path.display(), e));
+                }
+            },
+            None => {
+                let mut buffer = String::new();
+                match io::stdin().read_to_string(&mut buffer) {
+                    Ok(_) => buffer,
+                    Err(e) => {
+                        return Err(format!("Error reading from stdin: {}", e));
+                    }
                 }
             }
-        }
-    };
+        };
 
-    // Parse the format
-    let mut format = match input.parse::<Format>() {
-        Ok(format) => format,
-        Err(e) => {
-            return Err(format!("Error parsing format: {}", e));
-        }
-    };
-
-    if !args.dry_run {
-        // Apply the format to the filesystem
-        let mut fs = filesystem::physical::PhysicalFS;
-        match apply_format_to_fs(&mut format, &mut fs) {
-            Ok(()) => {
-                println!("Successfully applied changes to {} chunks", format.len());
+        // Parse the format
+        let mut format = match input.parse::<Format>() {
+            Ok(format) => format,
+            Err(e) => {
+                return Err(format!("Error parsing format: {}", e));
             }
-            Err(errors) => {
-                let mut message = String::new();
-                let _ = writeln!(&mut message, "Errors occurred while applying changes:");
-                for error in errors {
-                    let _ = writeln!(&mut message, "  - {}", error);
+        };
+
+        if !self.dry_run {
+            // Apply the format to the filesystem
+            let mut fs = filesystem::physical::PhysicalFS;
+            match apply_format_to_fs(&mut format, &mut fs) {
+                Ok(()) => {
+                    println!("Successfully applied changes to {} chunks", format.len());
                 }
-                let _ = write!(&mut message, "Failed to apply changes");
-                return Err(message);
+                Err(errors) => {
+                    let mut message = String::new();
+                    let _ = writeln!(&mut message, "Errors occurred while applying changes:");
+                    for error in errors {
+                        let _ = writeln!(&mut message, "  - {}", error);
+                    }
+                    let _ = write!(&mut message, "Failed to apply changes");
+                    return Err(message);
+                }
             }
+        } else {
+            format.file_chunks().into_iter().for_each(|(path, chunks)| {
+                println!("Would apply {} chunks to {}", chunks.len(), path.display());
+            });
         }
-    } else {
-        format.file_chunks().into_iter().for_each(|(path, chunks)| {
-            println!("Would apply {} chunks to {}", chunks.len(), path.display());
-        });
+
+        Ok(())
     }
-
-    Ok(())
 }

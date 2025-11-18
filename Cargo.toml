@@ -18,3 +18,4 @@ miette = { version = "7.4", features = ["fancy"] }
 thiserror = "2.0"
 nom = "8.0.0"
 atty = "0.2.14"
+memmap2 = "0.9.9"

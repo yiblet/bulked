@@ -8,6 +8,7 @@ mod cli;
 mod execute;
 mod filesystem;
 mod format;
+mod ingest;
 #[cfg(test)]
 mod integration_tests;
 mod matcher;

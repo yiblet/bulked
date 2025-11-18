@@ -31,77 +31,24 @@ pub(super) struct SearchArgs {
     plain: bool,
 }
 
-pub(super) fn handle_search(args: SearchArgs) -> Result<(), String> {
-    let is_tty = atty::is(atty::Stream::Stdout);
+impl SearchArgs {
+    pub fn handle(self) -> Result<(), String> {
+        let is_tty = atty::is(atty::Stream::Stdout);
 
-    // Configure and execute search
-    let config = ExecuteConfig::new(args.pattern, args.path)
-        .with_context_lines(args.context)
-        .with_respect_gitignore(!args.no_ignore)
-        .with_hidden(args.hidden);
+        // Configure and execute search
+        let config = ExecuteConfig::new(self.pattern, self.path)
+            .with_context_lines(self.context)
+            .with_respect_gitignore(!self.no_ignore)
+            .with_hidden(self.hidden);
 
-    let result = Execute::new(&config).map_err(|e| format!("Error: {}", e))?;
+        let result = Execute::new(&config).map_err(|e| format!("Error: {}", e))?;
 
-    if args.plain {
-        // Output results with formatting
-        for page in result.search_iter() {
-            let result = page.map_err(|e| format!("Error: {}", e))?;
-
-            for m in result.matches.iter() {
-                println!("\n{}:{}", m.file_path.display(), m.line_number);
-
-                // Context before
-                for ctx in &m.context_before {
-                    print!("  {:4} │ {}", ctx.line_number, ctx.content);
-                }
-
-                let (start_red, end_red) = if is_tty {
-                    let start_red = "\x1b[31m";
-                    let end_red = "\x1b[0m";
-                    (start_red, end_red)
-                } else {
-                    ("", "")
-                };
-
-                if let Some(range) = &m.line_match {
-                    // Highlight match
-                    print!(
-                        "  {:4} > {}{}{}{}{}",
-                        m.line_number,
-                        m.line_content.get(..range.start).unwrap_or_default(),
-                        start_red,
-                        &m.line_content[range.clone()],
-                        end_red,
-                        m.line_content.get(range.end..).unwrap_or_default()
-                    );
-                } else {
-                    // Match line (highlighted with >)
-                    print!("  {:4} > {}", m.line_number, m.line_content);
-                }
-
-                // Context after
-                for ctx in &m.context_after {
-                    print!("  {:4} │ {}", ctx.line_number, ctx.content);
-                }
-            }
-
-            // Summary
-            if result.matches.is_empty() {
-                println!("\nNo matches found");
-            }
-        }
-    } else {
         for page in result.search_iter() {
             let result = page.map_err(|e| format!("Error: {}", e))?;
             let format = Format::from_matches(&result.matches);
-
-            if is_tty {
-                print!("{}", format.highlight())
-            } else {
-                print!("{}", &format)
-            }
+            print!("{}", format.display(self.plain, is_tty))
         }
-    };
 
-    Ok(())
+        Ok(())
+    }
 }

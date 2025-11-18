@@ -147,6 +147,7 @@ dependencies = [
  "clap",
  "grep",
  "ignore",
+ "memmap2",
  "miette",
  "nom",
  "serde",

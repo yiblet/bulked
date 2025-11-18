@@ -37,6 +37,10 @@ impl FileSystem for PhysicalFS {
         })
     }
 
+    fn as_real_path<'a>(&self, path: &'a Path) -> Option<Cow<'a, Path>> {
+        Some(Cow::Borrowed(path))
+    }
+
     fn exists(&self, path: &Path) -> bool {
         path.exists()
     }
@@ -45,7 +49,11 @@ impl FileSystem for PhysicalFS {
         path.is_file()
     }
 
-    fn as_real_path<'a>(&self, path: &'a Path) -> Option<Cow<'a, Path>> {
-        Some(Cow::Borrowed(path))
+    fn read(&self, path: &Path) -> Result<Box<dyn std::io::Read>, FilesystemError> {
+        let file = fs::File::open(path).map_err(|source| FilesystemError::ReadError {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Ok(Box::new(file))
     }
 }
