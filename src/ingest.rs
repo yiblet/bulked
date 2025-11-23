@@ -164,7 +164,10 @@ fn process_range(
 
     // Read context after target line
     while positions.line < range.end {
-        read_line(reader, buf, positions)?;
+        match read_line(reader, buf, positions) {
+            Err(IngestError::UnexpectedEOF { .. }) => break,
+            e => e?,
+        };
         context_after.push(ContextLine {
             line_number: positions.line,
             content: std::mem::take(buf),

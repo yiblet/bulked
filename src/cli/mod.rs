@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
 
 mod apply;
+mod ingest;
 mod search;
+
+use crate::cli::ingest::IngestArgs;
 
 use self::apply::ApplyArgs;
 use self::search::SearchArgs;
@@ -28,6 +31,8 @@ enum Command {
     Search(SearchArgs),
     /// Apply modifications from a format file to the filesystem
     Apply(ApplyArgs),
+    /// Ingest reads in a stream of paths and line numbers and outputs out context
+    Ingest(IngestArgs),
 }
 
 pub fn run() -> Result<(), String> {
@@ -47,5 +52,6 @@ pub fn run() -> Result<(), String> {
     match cli.command {
         Command::Search(args) => args.handle(),
         Command::Apply(args) => args.handle(),
+        Command::Ingest(args) => args.handle(),
     }
 }
