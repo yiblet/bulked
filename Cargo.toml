@@ -8,7 +8,6 @@ anyhow = { version = "1.0.100", features = ["backtrace", "std"] }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1.0.228",  features = ["derive"] }
 serde_json = { version = "1.0.145", features = ["alloc"] }
-vfs = "0.12"  # Virtual filesystem abstraction
 grep = "0.4"  # Facade for grep-matcher, grep-regex, grep-searcher
 ignore = "0.4"
 tracing = "0.1"
