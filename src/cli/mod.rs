@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 
 mod apply;
+mod error;
 mod ingest;
 mod search;
 
@@ -8,6 +9,7 @@ use crate::cli::ingest::IngestArgs;
 
 use self::apply::ApplyArgs;
 use self::search::SearchArgs;
+pub use error::Error;
 
 /// Bulked - Search and modify code with context
 ///
@@ -35,7 +37,7 @@ enum Command {
     Ingest(IngestArgs),
 }
 
-pub fn run() -> Result<(), String> {
+pub fn run() -> Result<(), Error> {
     let cli = Cli::parse();
 
     // Initialize tracing based on verbosity

@@ -32,7 +32,7 @@ pub(super) struct SearchArgs {
 }
 
 impl SearchArgs {
-    pub fn handle(self) -> Result<(), String> {
+    pub fn handle(self) -> Result<(), super::Error> {
         let is_tty = atty::is(atty::Stream::Stdout);
 
         // Configure and execute search
@@ -41,10 +41,10 @@ impl SearchArgs {
             .with_respect_gitignore(!self.no_ignore)
             .with_hidden(self.hidden);
 
-        let result = Execute::new(&config).map_err(|e| format!("Error: {}", e))?;
+        let result = Execute::new(&config)?;
 
         for page in result.search_iter() {
-            let result = page.map_err(|e| format!("Error: {}", e))?;
+            let result = page?;
             let format = Format::from_matches(&result.matches);
             print!("{}", format.display(self.plain, is_tty))
         }

@@ -121,7 +121,7 @@ fn process_file(
 // FIXME: test process range across multiple cases:
 //   1. position < range.start
 //   2. position > range.end
-//   3. position == range.start 
+//   3. position == range.start
 //   4. position == range.end
 //   5. empty file
 fn process_range(

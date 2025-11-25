@@ -1,4 +1,3 @@
-use std::fmt::Write;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
@@ -19,51 +18,25 @@ pub(super) struct ApplyArgs {
 }
 
 impl ApplyArgs {
-    pub fn handle(self) -> Result<(), String> {
+    pub fn handle(self) -> Result<(), super::Error> {
         // Read format from input file or stdin
         let input = match self.input {
-            Some(path) => match std::fs::read_to_string(&path) {
-                Ok(content) => content,
-                Err(e) => {
-                    return Err(format!("Error reading file '{}': {}", path.display(), e));
-                }
-            },
+            Some(path) => std::fs::read_to_string(&path)?,
             None => {
                 let mut buffer = String::new();
-                match io::stdin().read_to_string(&mut buffer) {
-                    Ok(_) => buffer,
-                    Err(e) => {
-                        return Err(format!("Error reading from stdin: {}", e));
-                    }
-                }
+                io::stdin().read_to_string(&mut buffer)?;
+                buffer
             }
         };
 
         // Parse the format
-        let mut format = match input.parse::<Format>() {
-            Ok(format) => format,
-            Err(e) => {
-                return Err(format!("Error parsing format: {}", e));
-            }
-        };
+        let mut format = input.parse::<Format>()?;
 
         if !self.dry_run {
             // Apply the format to the filesystem
             let mut fs = filesystem::physical::PhysicalFS;
-            match apply_format_to_fs(&mut format, &mut fs) {
-                Ok(()) => {
-                    println!("Successfully applied changes to {} chunks", format.len());
-                }
-                Err(errors) => {
-                    let mut message = String::new();
-                    let _ = writeln!(&mut message, "Errors occurred while applying changes:");
-                    for error in errors {
-                        let _ = writeln!(&mut message, "  - {}", error);
-                    }
-                    let _ = write!(&mut message, "Failed to apply changes");
-                    return Err(message);
-                }
-            }
+            apply_format_to_fs(&mut format, &mut fs).map_err(super::Error::ApplyMultiple)?;
+            println!("Successfully applied changes to {} chunks", format.len());
         } else {
             format.file_chunks().into_iter().for_each(|(path, chunks)| {
                 println!("Would apply {} chunks to {}", chunks.len(), path.display());

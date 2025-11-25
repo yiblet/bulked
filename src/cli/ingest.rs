@@ -58,19 +58,22 @@ where
 impl Format {
     fn parse_jsonl(
         r: &mut dyn std::io::Read,
-    ) -> impl Iterator<Item = Result<IngestRecord, String>> {
-        BufReader::new(r).lines().map(string_result).map(|r| {
+    ) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+        BufReader::new(r).lines().map(|r| {
             let line = r?;
-            let record: Result<IngestRecord, _> = string_result(serde_json::from_str(&line));
-            record
+            Ok(serde_json::from_str(&line)?)
         })
     }
 
-    fn parse_json(r: &mut dyn std::io::Read) -> impl Iterator<Item = Result<IngestRecord, String>> {
+    fn parse_json(
+        r: &mut dyn std::io::Read,
+    ) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
         let mut content = String::new();
-        let res: Result<Vec<IngestRecord>, _> = string_result(r.read_to_string(&mut content))
+        let res: Result<Vec<IngestRecord>, _> = r
+            .read_to_string(&mut content)
+            .map_err(Into::into)
             .map(move |_| content)
-            .and_then(|content| string_result(serde_json::from_str(&content)));
+            .and_then(|content| Ok(serde_json::from_str(&content)?));
 
         match res {
             Ok(v) => EitherIter::Left(v.into_iter().map(Ok)),
@@ -80,44 +83,42 @@ impl Format {
 
     fn parse_grep(
         r: &mut dyn ::std::io::Read,
-    ) -> impl Iterator<Item = Result<IngestRecord, String>> {
-        BufReader::new(r)
-            .lines()
-            .map(string_result)
-            .filter_map(|r| {
-                r.map(|line| {
-                    let line_no_split = line
-                        .split_inclusive(':')
-                        .scan(0usize, |bytes, c| {
-                            let prev = *bytes;
-                            *bytes += c.len();
-                            Some((prev, c))
-                        })
-                        .find_map(|(pos, st)| match st.chars().nth(1)? {
-                            '0'..='9' => Some(pos),
-                            _ => None,
-                        })?;
-
-                    let file = &line[..line_no_split - 1];
-                    let nums = line[line_no_split..]
-                        .split_once(|c: char| !c.is_numeric())?
-                        .0;
-
-                    let line_no: usize = nums.parse().ok()?;
-                    let file = PathBuf::from_str(file).ok()?;
-                    Some(IngestRecord {
-                        path: file,
-                        line: line_no,
+    ) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+        BufReader::new(r).lines().filter_map(|r| {
+            r.map(|line| {
+                let line_no_split = line
+                    .split_inclusive(':')
+                    .scan(0usize, |bytes, c| {
+                        let prev = *bytes;
+                        *bytes += c.len();
+                        Some((prev, c))
                     })
+                    .find_map(|(pos, st)| match st.chars().nth(1)? {
+                        '0'..='9' => Some(pos),
+                        _ => None,
+                    })?;
+
+                let file = &line[..line_no_split - 1];
+                let nums = line[line_no_split..]
+                    .split_once(|c: char| !c.is_numeric())?
+                    .0;
+
+                let line_no: usize = nums.parse().ok()?;
+                let file = PathBuf::from_str(file).ok()?;
+                Some(IngestRecord {
+                    path: file,
+                    line: line_no,
                 })
-                .transpose()
             })
+            .map_err(Into::into)
+            .transpose()
+        })
     }
 
     pub fn parse(
         &self,
         r: &mut dyn ::std::io::Read,
-    ) -> impl Iterator<Item = Result<IngestRecord, String>> {
+    ) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
         match self {
             Self::Json => EitherIter::Left(EitherIter::Left(Self::parse_json(r))),
             Self::Jsonl => EitherIter::Left(EitherIter::Right(Self::parse_jsonl(r))),
@@ -160,18 +161,14 @@ impl From<IngestRecord> for crate::types::IngestInput {
     }
 }
 
-fn string_result<S, E: std::error::Error>(res: Result<S, E>) -> Result<S, String> {
-    res.map_err(|e| e.to_string())
-}
-
 impl IngestArgs {
-    fn get_inputs(&self) -> Result<Vec<crate::types::IngestInput>, String> {
+    fn get_inputs(&self) -> Result<Vec<crate::types::IngestInput>, super::Error> {
         let mut stdin;
         let mut file;
 
         let stream: &mut dyn std::io::Read = match &self.path {
             Some(buf) if buf.as_os_str() != "-" => {
-                file = std::fs::File::open(buf).map_err(|e| e.to_string())?;
+                file = std::fs::File::open(buf)?;
                 &mut file
             }
             _ => {
@@ -186,15 +183,15 @@ impl IngestArgs {
             .collect()
     }
 
-    pub fn handle(self) -> Result<(), String> {
+    pub fn handle(self) -> Result<(), super::Error> {
         let is_tty = atty::is(atty::Stream::Stdout);
         let inputs = self.get_inputs()?;
 
-        let result = string_result(crate::ingest::ingest(
+        let result = crate::ingest::ingest(
             &crate::filesystem::physical::PhysicalFS,
             inputs,
             self.context,
-        ))?;
+        )?;
 
         let format = crate::format::Format::from_matches(&result);
         print!("{}", format.display(self.plain, is_tty));
