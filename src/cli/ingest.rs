@@ -1,29 +1,80 @@
 use std::{
-    io::{BufRead, BufReader},
+    collections::VecDeque,
+    io::{BufRead, BufReader, Read},
     path::PathBuf,
     str::FromStr,
 };
 
 use clap::{Args, ValueEnum};
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 enum Format {
-    #[default]
     Jsonl,
     Json,
     Grep,
 }
 
-impl ValueEnum for Format {
+#[derive(Debug, Clone, Default)]
+enum FormatOptions {
+    #[default]
+    Auto,
+    Format(Format),
+}
+
+impl FormatOptions {
+    fn parse<R: Read>(self, mut r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+        if let Self::Format(format) = self {
+            return EitherIter::Right(EitherIter::Left(format.parse(r)));
+        }
+
+        let mut total = 0;
+        let mut cur = [0u8; 1024];
+        loop {
+            match r.read(&mut cur[total..]) {
+                Ok(0) => {
+                    break;
+                }
+                Ok(n) => {
+                    total += n;
+                    if total == cur.len() {
+                        break;
+                    }
+                }
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::UnexpectedEof => break,
+                    _ => return EitherIter::Left(std::iter::once(Err(super::Error::Io(e)))),
+                },
+            }
+        }
+
+        let guess = Format::guess(&cur[..total]);
+        let buf: VecDeque<u8> = VecDeque::from(cur);
+        EitherIter::Right(EitherIter::Right(guess.parse(buf.chain(r))))
+    }
+}
+
+impl ValueEnum for FormatOptions {
     fn value_variants<'a>() -> &'a [Self] {
-        &[Format::Jsonl, Format::Json, Format::Grep]
+        &[
+            FormatOptions::Format(Format::Jsonl),
+            FormatOptions::Format(Format::Json),
+            FormatOptions::Format(Format::Grep),
+            FormatOptions::Auto,
+        ]
     }
 
     fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
         Some(match self {
-            Self::Jsonl => clap::builder::PossibleValue::new("jsonl").help("parse as a jsonl"),
-            Self::Json => clap::builder::PossibleValue::new("json").help("parse as a json"),
-            Self::Grep => clap::builder::PossibleValue::new("grep").help("parse as a grep output"),
+            Self::Format(Format::Jsonl) => {
+                clap::builder::PossibleValue::new("jsonl").help("parse as a jsonl")
+            }
+            Self::Format(Format::Json) => {
+                clap::builder::PossibleValue::new("json").help("parse as a json")
+            }
+            Self::Format(Format::Grep) => {
+                clap::builder::PossibleValue::new("grep").help("parse as a grep output")
+            }
+            Self::Auto => clap::builder::PossibleValue::new("auto").help("auto-detect format"),
         })
     }
 }
@@ -56,18 +107,14 @@ where
 }
 
 impl Format {
-    fn parse_jsonl(
-        r: &mut dyn std::io::Read,
-    ) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+    fn parse_jsonl<R: Read>(r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
         BufReader::new(r).lines().map(|r| {
             let line = r?;
             Ok(serde_json::from_str(&line)?)
         })
     }
 
-    fn parse_json(
-        r: &mut dyn std::io::Read,
-    ) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+    fn parse_json<R: Read>(mut r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
         let mut content = String::new();
         let res: Result<Vec<IngestRecord>, _> = r
             .read_to_string(&mut content)
@@ -81,9 +128,7 @@ impl Format {
         }
     }
 
-    fn parse_grep(
-        r: &mut dyn ::std::io::Read,
-    ) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+    fn parse_grep<R: Read>(r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
         BufReader::new(r).lines().filter_map(|r| {
             r.map(|line| {
                 let line_no_split = line
@@ -115,14 +160,21 @@ impl Format {
         })
     }
 
-    pub fn parse(
-        &self,
-        r: &mut dyn ::std::io::Read,
-    ) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+    pub fn parse<R: Read>(self, r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
         match self {
             Self::Json => EitherIter::Left(EitherIter::Left(Self::parse_json(r))),
             Self::Jsonl => EitherIter::Left(EitherIter::Right(Self::parse_jsonl(r))),
             Self::Grep => EitherIter::Right(Self::parse_grep(r)),
+        }
+    }
+
+    pub fn guess(line: &[u8]) -> Self {
+        if line.starts_with(b"[{") {
+            Self::Json
+        } else if line.starts_with(b"{") {
+            Self::Jsonl
+        } else {
+            Self::Grep
         }
     }
 }
@@ -134,8 +186,8 @@ pub(super) struct IngestArgs {
     #[arg(default_value = None)]
     path: Option<PathBuf>,
 
-    #[arg(short, long = "format", default_value = "jsonl")]
-    format: Format,
+    #[arg(short, long = "format", default_value = "auto")]
+    format: FormatOptions,
 
     /// Lines of context before and after each match
     #[arg(short = 'C', long, default_value = "20")]
@@ -178,6 +230,7 @@ impl IngestArgs {
         };
 
         self.format
+            .clone()
             .parse(stream)
             .map(|r| r.map(|i| i.into()))
             .collect()
