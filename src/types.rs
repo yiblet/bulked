@@ -28,6 +28,7 @@ pub struct MatchResult {
     pub line_content: String,
 
     /// Line match range (if any)
+    /// the range is relative to the start of the line.
     pub line_match: Option<std::ops::Range<usize>>,
 
     /// Byte offset of the match within the file

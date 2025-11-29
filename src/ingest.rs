@@ -56,7 +56,6 @@ fn create_ranges(iter: impl Iterator<Item = usize>, context: usize) -> Vec<Range
     res
 }
 
-#[allow(dead_code)]
 pub fn ingest(
     fs: &dyn crate::filesystem::FileSystem,
     inputs: Vec<IngestInput>,
@@ -177,8 +176,8 @@ fn process_range(
     Ok(Some(MatchResult {
         file_path: path.to_path_buf(),
         line_number: range.line,
+        line_match: Some(0..line_string.len()),
         line_content: line_string,
-        line_match: None,
         byte_offset: line_offset,
         context_before,
         context_after,
