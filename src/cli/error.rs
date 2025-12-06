@@ -13,6 +13,18 @@ pub enum Error {
     Json(#[from] serde_json::Error),
 
     #[error(transparent)]
+    Csv(#[from] csv::Error),
+
+    #[error("csv does not contain the right headers. It must be at least path,line_number")]
+    CsvMissingHeaders,
+
+    #[error("csv contains missing fields for {0}")]
+    CsvMissingFields(&'static str),
+
+    #[error("csv coould not parse {0}")]
+    CsvCouldNotParse(&'static str),
+
+    #[error(transparent)]
     Execute(#[from] crate::execute::ExecuteError),
 
     #[error(transparent)]

@@ -11,6 +11,7 @@ use clap::{Args, ValueEnum};
 enum Format {
     Jsonl,
     Json,
+    Csv,
     Grep,
 }
 
@@ -59,6 +60,7 @@ impl ValueEnum for FormatOptions {
             FormatOptions::Format(Format::Jsonl),
             FormatOptions::Format(Format::Json),
             FormatOptions::Format(Format::Grep),
+            FormatOptions::Format(Format::Csv),
             FormatOptions::Auto,
         ]
     }
@@ -73,6 +75,9 @@ impl ValueEnum for FormatOptions {
             }
             Self::Format(Format::Grep) => {
                 clap::builder::PossibleValue::new("grep").help("parse as a grep output")
+            }
+            Self::Format(Format::Csv) => {
+                clap::builder::PossibleValue::new("csv").help("parse as a csv")
             }
             Self::Auto => clap::builder::PossibleValue::new("auto").help("auto-detect format"),
         })
@@ -128,6 +133,88 @@ impl Format {
         }
     }
 
+    fn parse_csv<R: Read>(r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+        let mut rdr = csv::Reader::from_reader(r);
+
+        #[derive(Debug, Clone)]
+        struct HeaderLocs {
+            file_path: usize,
+            line_number: usize,
+        }
+
+        let headers = rdr
+            .headers()
+            .cloned()
+            .map_err(super::Error::Csv)
+            .and_then(|r| {
+                let file_path = ["filepath", "file", "path", "filepath", "filepath"];
+                let line_number = [
+                    "linenumber",
+                    "line",
+                    "linenumber",
+                    "linenum",
+                    "lineno",
+                    "ln",
+                ];
+
+                let mut file_path_loc = None;
+                let mut line_number_loc = None;
+
+                for (i, h) in r.iter().enumerate() {
+                    let h = h
+                        .chars()
+                        .map(|c| c.to_ascii_lowercase())
+                        .filter(|c| !c.is_whitespace())
+                        .filter(|c| !['-', '_'].contains(c))
+                        .collect::<String>();
+
+                    if h.is_empty() {
+                        continue;
+                    }
+
+                    if file_path.contains(&h.as_str())
+                        || file_path.contains(&&h.as_str()[..h.len() - 1])
+                    {
+                        file_path_loc = Some(i);
+                    } else if line_number.contains(&h.as_str())
+                        || line_number.contains(&&h.as_str()[..h.len() - 1])
+                    {
+                        line_number_loc = Some(i);
+                    }
+                }
+
+                file_path_loc
+                    .zip(line_number_loc)
+                    .map(|(fp, ln)| HeaderLocs {
+                        file_path: fp,
+                        line_number: ln,
+                    })
+                    .ok_or(super::Error::CsvMissingHeaders)
+            });
+
+        rdr.into_records().map(move |r| {
+            let headers = headers
+                .as_ref()
+                .ok()
+                .cloned()
+                .ok_or(super::Error::CsvMissingHeaders)?;
+            let r = r.map_err(super::Error::Csv)?;
+
+            Ok(IngestRecord {
+                path: PathBuf::from(
+                    r.get(headers.file_path)
+                        .ok_or(super::Error::CsvMissingFields("file path"))?
+                        .to_string(),
+                ),
+                line: r
+                    .get(headers.line_number)
+                    .ok_or(super::Error::CsvMissingFields("line number"))?
+                    .parse()
+                    .map_err(|_| super::Error::CsvCouldNotParse("line number"))?,
+            })
+        })
+    }
+
     fn parse_grep<R: Read>(r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
         BufReader::new(r).lines().filter_map(|r| {
             r.map(|line| {
@@ -164,7 +251,8 @@ impl Format {
         match self {
             Self::Json => EitherIter::Left(EitherIter::Left(Self::parse_json(r))),
             Self::Jsonl => EitherIter::Left(EitherIter::Right(Self::parse_jsonl(r))),
-            Self::Grep => EitherIter::Right(Self::parse_grep(r)),
+            Self::Grep => EitherIter::Right(EitherIter::Left(Self::parse_grep(r))),
+            Self::Csv => EitherIter::Right(EitherIter::Right(Self::parse_csv(r))),
         }
     }
 
@@ -174,7 +262,13 @@ impl Format {
         } else if line.starts_with(b"{") {
             Self::Jsonl
         } else {
-            Self::Grep
+            line.iter()
+                .find_map(|c| match c {
+                    b',' => Some(Self::Csv),
+                    b':' => Some(Self::Grep),
+                    _ => None,
+                })
+                .unwrap_or(Self::Grep)
         }
     }
 }
