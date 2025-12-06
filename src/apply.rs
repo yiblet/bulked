@@ -36,6 +36,12 @@ pub enum ApplyError {
     #[error("Invalid line number: line numbers must be >= 1")]
     InvalidLineNumber,
 
+    #[error("Invalid number of lines: number of lines must be > 0")]
+    InvalidNumberOfLines,
+
+    #[error("Chunks are not sorted by line number")]
+    UnsortedChunks,
+
     #[error("Failed to modify file {path}: {source}")]
     ModifyError {
         path: PathBuf,
@@ -55,6 +61,15 @@ fn chunks_are_all_for_same_path(chunks: &[Chunk]) -> Result<(), ApplyError> {
     Ok(())
 }
 
+fn chunks_are_have_non_zero_length(chunks: &[Chunk]) -> Result<(), ApplyError> {
+    if !chunks.iter().all(|c| c.num_lines > 0) {
+        return Err(ApplyError::InvalidNumberOfLines);
+    }
+    Ok(())
+}
+
+// TODO: use this
+#[allow(dead_code)]
 fn chunks_have_valid_line_numbers(chunks: &[Chunk]) -> Result<(), ApplyError> {
     if !chunks.iter().all(|c| c.start_line >= 1) {
         return Err(ApplyError::InvalidLineNumber);
@@ -63,11 +78,11 @@ fn chunks_have_valid_line_numbers(chunks: &[Chunk]) -> Result<(), ApplyError> {
 }
 
 fn chunks_are_sorted_by_line_number(chunks: &[Chunk]) -> Result<(), ApplyError> {
-    if !chunks
-        .windows(2)
-        .all(|w| w[0].start_line <= w[1].start_line)
-    {
-        return Err(ApplyError::InvalidLineNumber);
+    if !chunks.windows(2).all(|w| match w {
+        [c1, c2] => c1.start_line < c2.start_line,
+        _ => false,
+    }) {
+        return Err(ApplyError::UnsortedChunks);
     }
     Ok(())
 }
@@ -75,7 +90,8 @@ fn chunks_are_sorted_by_line_number(chunks: &[Chunk]) -> Result<(), ApplyError> 
 fn chunks_are_not_overlapping(chunks: &[Chunk]) -> Result<(), ApplyError> {
     for window in chunks.windows(2) {
         if let [c1, c2] = window {
-            let c1_end = c1.start_line + c1.num_lines;
+            let c1_end = c1.start_line + c1.num_lines - 1;
+
             if c1_end > c2.start_line {
                 return Err(ApplyError::OverlappingChunks(
                     c1.start_line,
@@ -168,16 +184,34 @@ fn segments_from_chunks<'a>(
 /// - Chunks have different paths
 /// - Chunks overlap
 /// - Chunks reference lines outside the file
-pub fn apply_format(chunks: &[Chunk], content: &str) -> Result<String, ApplyError> {
+pub fn apply_format(chunks: &[Chunk], content: &str) -> Result<String, Vec<ApplyError>> {
     if chunks.is_empty() {
         return Ok(content.to_string());
     }
 
-    chunks_are_all_for_same_path(chunks)?;
-    chunks_have_valid_line_numbers(chunks)?;
-    chunks_are_within_file_bounds(chunks, content)?;
-    chunks_are_sorted_by_line_number(chunks)?;
-    chunks_are_not_overlapping(chunks)?;
+    let mut errors = Vec::new();
+    let mut handle_error = |result: Result<(), ApplyError>| {
+        if let Err(err) = result {
+            errors.push(err);
+        }
+    };
+
+    handle_error(chunks_are_all_for_same_path(chunks));
+    handle_error(chunks_are_within_file_bounds(chunks, content));
+    // TODO: fix this
+    // chunks are zero indexed so checking if it's greater than 1 is bad
+    // chunks_have_valid_line_numbers(chunks)?;
+    //
+
+    // to check if something is overlapping we need to first ensure the chunks are sorted
+    handle_error(
+        chunks_are_sorted_by_line_number(chunks).and_then(|_| chunks_are_not_overlapping(chunks)),
+    );
+    handle_error(chunks_are_have_non_zero_length(chunks));
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
 
     // Reconstruct final string
     let result: String = segments_from_chunks(chunks, content)
@@ -190,6 +224,7 @@ pub fn apply_format(chunks: &[Chunk], content: &str) -> Result<String, ApplyErro
     Ok(result)
 }
 
+// TODO: change this function so it validates everything first before modifying the file.
 pub fn apply_format_to_fs(
     format: &mut Format,
     fs: &mut dyn FileSystem,
@@ -199,22 +234,25 @@ pub fn apply_format_to_fs(
     for (path, chunks) in format.file_chunks() {
         let write_result = fs
             .read_to_string(path)
-            .map_err(|e| ApplyError::ModifyError {
-                path: path.to_path_buf(),
-                source: e,
+            .map_err(|e| {
+                vec![ApplyError::ModifyError {
+                    path: path.to_path_buf(),
+                    source: e,
+                }]
             })
             .and_then(|content| {
                 let modified_content = apply_format(chunks, &content)?;
-                fs.write_string(path, &modified_content)
-                    .map_err(|e| ApplyError::ModifyError {
+                fs.write_string(path, &modified_content).map_err(|e| {
+                    vec![ApplyError::ModifyError {
                         path: path.to_path_buf(),
                         source: e,
-                    })?;
+                    }]
+                })?;
                 Ok(())
             });
 
         if let Err(err) = write_result {
-            errors.push(err);
+            errors.extend(err);
         }
     }
 
@@ -296,7 +334,10 @@ mod tests {
             Chunk::new(PathBuf::from("test2.txt"), 2, 1, "mod2\n".to_string()),
         ];
         let result = apply_format(&chunks, content);
-        assert!(matches!(result, Err(ApplyError::MixedPaths)));
+        assert!(matches!(
+            result.as_ref().map_err(|r| r.as_slice()),
+            Err([ApplyError::MixedPaths])
+        ));
     }
 
     #[test]
@@ -308,8 +349,8 @@ mod tests {
         ];
         let result = apply_format(&chunks, content);
         assert!(matches!(
-            result,
-            Err(ApplyError::OverlappingChunks(_, _, _, _))
+            result.as_ref().map_err(|r| r.as_slice()),
+            Err([ApplyError::OverlappingChunks(_, _, _, _)])
         ));
     }
 
@@ -323,7 +364,10 @@ mod tests {
             "mod".to_string(),
         )];
         let result = apply_format(&chunks, content);
-        assert!(matches!(result, Err(ApplyError::ChunkOutOfBounds { .. })));
+        assert!(matches!(
+            result.as_ref().map_err(|r| r.as_slice()),
+            Err([ApplyError::ChunkOutOfBounds { .. }])
+        ));
     }
 
     #[test]
@@ -343,10 +387,13 @@ mod tests {
     fn test_apply_unsorted_chunks() {
         let content = "line1\nline2\nline3\nline4\nline5";
         let chunks = vec![
-            Chunk::new(PathBuf::from("test.txt"), 4, 1, "mod4".to_string()),
+            Chunk::new(PathBuf::from("test.txt"), 3, 1, "mod4".to_string()),
             Chunk::new(PathBuf::from("test.txt"), 1, 1, "mod1".to_string()),
         ];
         let result = apply_format(&chunks, content);
-        assert!(matches!(result, Err(ApplyError::InvalidLineNumber)));
+        assert!(matches!(
+            result.as_ref().map_err(|r| r.as_slice()),
+            Err([ApplyError::UnsortedChunks])
+        ));
     }
 }
