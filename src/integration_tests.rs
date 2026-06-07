@@ -223,7 +223,7 @@ fn test_search_format_apply_roundtrip_preserves_content() {
     let mut format = Format::from_matches(&all_matches);
 
     // Apply the format back to the file (no modifications)
-    apply_format_to_fs(&mut format, &mut fs.clone()).unwrap();
+    apply_format_to_fs(&mut format, &fs).unwrap();
 
     // Read the file back and verify it's unchanged
     let final_content = fs.read_to_string(&test_file).unwrap();

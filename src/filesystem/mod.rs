@@ -6,6 +6,7 @@
 
 pub mod memory;
 pub mod physical;
+pub mod staging;
 
 use std::{
     borrow::Cow,
@@ -68,7 +69,23 @@ pub trait FileSystem: Send + Sync {
 
     fn read(&self, path: &Path) -> Result<Box<dyn std::io::Read>, FilesystemError>;
 
+    // Whole-string write primitive; used by tests and as a convenience over `writer`.
+    #[allow(dead_code)]
     fn write_string(&self, path: &Path, content: &str) -> Result<(), FilesystemError>;
+
+    /// Open a streaming writer to `path`, creating it or truncating an existing file.
+    ///
+    /// This is the streaming dual of [`FileSystem::read`]; it lets callers write a
+    /// file incrementally with bounded memory instead of materializing the whole
+    /// contents up front.
+    fn writer(&self, path: &Path) -> Result<Box<dyn std::io::Write>, FilesystemError>;
+
+    /// Rename `from` to `to` within this filesystem (atomic on the real FS when both
+    /// live on the same device).
+    fn rename(&self, from: &Path, to: &Path) -> Result<(), FilesystemError>;
+
+    /// Remove a file.
+    fn remove_file(&self, path: &Path) -> Result<(), FilesystemError>;
 
     fn as_real_path<'a>(&self, path: &'a Path) -> Option<Cow<'a, Path>>;
 

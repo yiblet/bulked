@@ -56,4 +56,26 @@ impl FileSystem for PhysicalFS {
         })?;
         Ok(Box::new(file))
     }
+
+    fn writer(&self, path: &Path) -> Result<Box<dyn std::io::Write>, FilesystemError> {
+        let file = fs::File::create(path).map_err(|source| FilesystemError::WriteError {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Ok(Box::new(std::io::BufWriter::new(file)))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> Result<(), FilesystemError> {
+        fs::rename(from, to).map_err(|source| FilesystemError::WriteError {
+            path: to.to_path_buf(),
+            source,
+        })
+    }
+
+    fn remove_file(&self, path: &Path) -> Result<(), FilesystemError> {
+        fs::remove_file(path).map_err(|source| FilesystemError::WriteError {
+            path: path.to_path_buf(),
+            source,
+        })
+    }
 }

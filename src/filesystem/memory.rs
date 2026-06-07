@@ -6,6 +6,7 @@
 use super::{FileSystem, FilesystemError};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -41,15 +42,10 @@ impl MemoryFS {
         Ok(())
     }
 
-    /// Remove a file from the filesystem
-    pub fn remove_file(&self, path: &Path) -> Result<(), FilesystemError> {
-        let mut files = self.files.write().map_err(|_| FilesystemError::LockError)?;
-        files
-            .remove(path)
-            .ok_or_else(|| FilesystemError::FileNotFound {
-                path: path.to_path_buf(),
-            })?;
-        Ok(())
+    /// Number of files currently stored (test helper for asserting temp cleanup).
+    #[cfg(test)]
+    pub fn file_count(&self) -> usize {
+        self.files.read().map(|files| files.len()).unwrap_or(0)
     }
 
     /// Clear all files from the filesystem
@@ -98,6 +94,35 @@ impl FileSystem for MemoryFS {
         Ok(())
     }
 
+    fn writer(&self, path: &Path) -> Result<Box<dyn std::io::Write>, FilesystemError> {
+        Ok(Box::new(MemoryWriter {
+            files: Arc::clone(&self.files),
+            path: path.to_path_buf(),
+            buf: Vec::new(),
+        }))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> Result<(), FilesystemError> {
+        let mut files = self.files.write().map_err(|_| FilesystemError::LockError)?;
+        let data = files
+            .remove(from)
+            .ok_or_else(|| FilesystemError::FileNotFound {
+                path: from.to_path_buf(),
+            })?;
+        files.insert(to.to_path_buf(), data);
+        Ok(())
+    }
+
+    fn remove_file(&self, path: &Path) -> Result<(), FilesystemError> {
+        let mut files = self.files.write().map_err(|_| FilesystemError::LockError)?;
+        files
+            .remove(path)
+            .ok_or_else(|| FilesystemError::FileNotFound {
+                path: path.to_path_buf(),
+            })?;
+        Ok(())
+    }
+
     fn exists(&self, path: &Path) -> bool {
         self.files
             .read()
@@ -108,6 +133,39 @@ impl FileSystem for MemoryFS {
     fn is_file(&self, path: &Path) -> bool {
         // In MemoryFS, everything stored is a file
         self.exists(path)
+    }
+}
+
+/// Streaming writer for [`MemoryFS`].
+///
+/// Bytes are buffered and published into the in-memory map on `flush` — and on
+/// drop, so a writer that is written-then-dropped lands its content like a real
+/// file handle would.
+struct MemoryWriter {
+    files: Arc<RwLock<HashMap<PathBuf, Vec<u8>>>>,
+    path: PathBuf,
+    buf: Vec<u8>,
+}
+
+impl Write for MemoryWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.buf.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut files = self
+            .files
+            .write()
+            .map_err(|_| std::io::Error::other("memory fs lock poisoned"))?;
+        files.insert(self.path.clone(), self.buf.clone());
+        Ok(())
+    }
+}
+
+impl Drop for MemoryWriter {
+    fn drop(&mut self) {
+        let _ = self.flush();
     }
 }
 
