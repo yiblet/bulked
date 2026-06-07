@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, IsTerminal, Read},
     path::PathBuf,
     str::FromStr,
 };
@@ -331,7 +331,7 @@ impl IngestArgs {
     }
 
     pub fn handle(self) -> Result<(), super::Error> {
-        let is_tty = atty::is(atty::Stream::Stdout);
+        let is_tty = std::io::stdout().is_terminal();
         let inputs = self.get_inputs()?;
 
         let result = crate::ingest::ingest(

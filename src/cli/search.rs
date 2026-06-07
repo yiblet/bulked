@@ -1,3 +1,4 @@
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use clap::Args;
@@ -33,7 +34,7 @@ pub(super) struct SearchArgs {
 
 impl SearchArgs {
     pub fn handle(self) -> Result<(), super::Error> {
-        let is_tty = atty::is(atty::Stream::Stdout);
+        let is_tty = std::io::stdout().is_terminal();
 
         // Configure and execute search
         let config = ExecuteConfig::new(self.pattern, self.path)
