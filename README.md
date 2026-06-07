@@ -1,29 +1,57 @@
 # Bulked
 
-A Rust command-line tool for searching code with context and applying modifications. An enhanced grep-like tool designed for bulk code editing workflows.
+**Bulked** (short for **Bulk Editor**) is a Rust command-line tool that lets you
+edit many files at once by treating search results as a single editable
+document. You collect the lines you want to change, edit them as one plain-text
+file, then apply the edits back to every source file in one shot.
 
-## Features
+## The core flow
 
-### Search Command
+The heart of bulked is two commands — **`ingest`** and **`apply`**:
 
-Search for regex patterns in files recursively with rich context:
+1. **`bulked ingest`** — collect the lines you want to edit and print them, with
+   context, as an editable text format. Pipe in the output of *any* tool
+   (`grep`, ripgrep, compiler/linter errors, a CSV of locations, …), or use
+   `bulked search` to find matches yourself.
+2. **Edit** — open that text in your editor (or pipe it through a script / an
+   LLM) and change the content however you like.
+3. **`bulked apply`** — feed the edited text back to bulked. It validates the
+   chunks and writes every change back to the right place in every file at once.
 
-- Shows configurable lines of context (default: 20 lines) before and after each match
-- Colored output with highlighted matches
-- Respects `.gitignore` files by default
-- Can include/exclude hidden files
-- Two output formats:
-  - **Plain text**: Human-readable format with line numbers and context markers
-  - **Structured format**: Machine-readable format for piping to the apply command
+```bash
+# 1. Find the lines you care about and save them to a file
+grep -rn 'TODO' src/ | bulked ingest > edits.bk
 
-### Apply Command
+# 2. Edit edits.bk in your editor — change the content inside the chunks
 
-Apply modifications back to the filesystem:
+# 3. Preview, then apply your changes back to the files
+bulked apply --input edits.bk --dry-run
+bulked apply --input edits.bk
+```
 
-- Takes structured format output from search command
-- Supports dry-run mode to preview changes without applying
-- Can read from stdin or from a file
-- Batch applies changes across multiple files
+## The chunk format
+
+`ingest`, `search`, and `apply` all speak the same plain-text format. Each
+editable block is a `chunk`:
+
+```
+@src/main.rs:10:3
+fn main() {
+    println!("hello");
+}
+@@@
+```
+
+- The header is `@<path>:<start-line>:<num-lines>`.
+- Edit the lines between the header and the closing `@@@`.
+- Everything outside chunks is treated as comments and ignored on apply, so
+  notes you leave in the file are harmless.
+- Use `@@@-` instead of `@@@` to mean "no trailing newline at end of file".
+- Inside content, write `\@` for a literal `@` and `\\` for a literal `\`.
+- You may add, remove, or change lines freely inside a chunk — the line count in
+  the header describes the *original* lines being replaced.
+
+Conventionally these files use the `.bk` extension.
 
 ## Installation
 
@@ -33,97 +61,106 @@ cargo build --release
 
 The binary will be available at `target/release/bulked`.
 
-## Usage
+## Commands
 
-### Search for patterns
+Every command has detailed built-in help — run `bulked --help`, or
+`bulked <command> --help` for examples and the full option list.
 
-Basic search with default context (20 lines):
+### `ingest` — locations in, editable chunks out
+
+`ingest` reads a list of `(path, line)` locations and, for each one, prints the
+surrounding lines as an editable chunk. This is how you get the output of any
+tool into bulked.
+
 ```bash
-bulked search "pattern" /path/to/search
+# plain `grep -n` style output straight into the editable format
+grep -rn 'TODO' src/ | bulked ingest > edits.bk
+
+# a CSV exported from somewhere else, 5 lines of context
+bulked ingest locations.csv -C 5 > edits.bk
+
+# a JSON array of {"path", "line"} objects
+bulked ingest --format json locations.json > edits.bk
 ```
 
-Custom context lines:
+Input formats are auto-detected (override with `--format`):
+
+| Format | Description |
+|---|---|
+| `jsonl` | one JSON object per line, e.g. `{"path":"src/a.rs","line":12}` |
+| `json`  | a JSON array of those same objects |
+| `csv`   | a header row naming a path column and a line column, then rows |
+| `grep`  | classic `path:line:...` lines, e.g. `grep -n` / `rg -n` output |
+
+### `search` — find matches yourself
+
+`search` is a grep-like recursive search that emits the same editable chunk
+format. It's the self-contained way to start a bulk edit when you want bulked to
+do the finding. By default it respects `.gitignore` and skips hidden files.
+
 ```bash
-bulked search "pattern" /path/to/search -C 10
+# find matches and save the editable format
+bulked search 'TODO' src/ > edits.bk
+
+# tighter context, include hidden files, ignore .gitignore
+bulked search 'fn main' . -C 5 --hidden --no-ignore
+
+# human-readable view (not meant for `apply`)
+bulked search 'TODO' src/ --plain
 ```
 
-Plain text output (human-readable):
+### `apply` — write the edits back
+
+`apply` parses the (edited) chunk format and writes each change back into the
+right place in each file. Before writing, every chunk is validated together
+(errors are reported all at once, not one at a time): chunks must stay sorted,
+must not overlap, must point at lines that exist, and must have a non-zero
+length. If anything fails, nothing is written.
+
 ```bash
-bulked search "pattern" /path/to/search --plain
-```
+# preview what would change, without touching anything
+bulked apply --input edits.bk --dry-run
 
-Include hidden files:
-```bash
-bulked search "pattern" /path/to/search --hidden
-```
+# apply the edits from a file
+bulked apply --input edits.bk
 
-Don't respect .gitignore:
-```bash
-bulked search "pattern" /path/to/search --no-ignore
-```
-
-### Apply modifications
-
-Preview changes (dry-run):
-```bash
-bulked apply -i changes.txt --dry-run
-```
-
-Apply changes from file:
-```bash
-bulked apply -i changes.txt
-```
-
-Apply changes from stdin:
-```bash
-bulked search "pattern" | bulked apply
-```
-
-### Workflow Example
-
-1. **Search**: Find code patterns and save results
-```bash
-bulked search "TODO" . > todos.txt
-```
-
-2. **Edit**: Manually edit the structured format output to make desired changes
-
-3. **Apply**: Apply the changes back to files
-```bash
-bulked apply -i todos.txt
-```
-
-Or use dry-run first to preview:
-```bash
-bulked apply -i todos.txt --dry-run
+# apply edits straight from a pipe
+bulked ingest locations.csv | my-edit-script | bulked apply
 ```
 
 ## Options
 
-### Global Options
+### Global
 
-- `-v, --verbose`: Enable verbose logging
+- `-v, --verbose`: Enable verbose (DEBUG-level) logging to stderr
 
-### Search Options
+### `ingest`
+
+- `path`: File of locations to read (default: stdin; use `-` to force stdin)
+- `-f, --format <FORMAT>`: Input format — `auto` (default), `jsonl`, `json`, `csv`, `grep`
+- `-C, --context <LINES>`: Lines of context before and after each location (default: 20)
+- `--plain`: Print human-readable text instead of the editable chunk format
+
+### `search`
 
 - `pattern`: Regex pattern to search for (required)
 - `path`: Directory or file to search (default: current directory)
 - `-C, --context <LINES>`: Lines of context before and after each match (default: 20)
-- `--no-ignore`: Don't respect .gitignore files
-- `--hidden`: Include hidden files in search
-- `--plain`: Output as plain text (human-readable format)
+- `--no-ignore`: Search files normally excluded by `.gitignore`
+- `--hidden`: Include hidden files and directories in the search
+- `--plain`: Print human-readable text instead of the editable chunk format
 
-### Apply Options
+### `apply`
 
-- `-i, --input <FILE>`: Input file containing the format to apply (reads from stdin if not specified)
-- `--dry-run`: Preview changes without applying them
+- `-i, --input <FILE>`: Edited chunk file to apply (reads from stdin if not specified)
+- `-d, --dry-run`: Validate and report what would change, without writing any files
 
-## Use Cases
+## Use cases
 
-- **Bulk code refactoring**: Search for patterns, edit results, apply changes across multiple files
-- **Code review**: Find and examine code patterns with surrounding context
-- **TODO management**: Search for TODOs and track them with context
-- **Pattern analysis**: Understand how certain patterns are used throughout a codebase
+- **Bulk code refactoring**: ingest matches, edit results, apply changes across many files
+- **Acting on tool output**: pipe compiler errors, linter findings, or `grep` hits into an editable form
+- **LLM-driven edits**: ingest → let a model rewrite the chunks → apply
+- **TODO management**: collect TODOs with context and resolve them in one pass
 
 ## License
 

@@ -274,20 +274,46 @@ impl Format {
 }
 
 #[derive(Args, Debug)]
+#[command(after_long_help = "\
+`ingest` reads a list of file locations from stdin (or a file) and, for each one,
+prints the surrounding lines as an editable `chunk`. This is how you get the
+output of *any* tool into bulked: grep, ripgrep, compiler/linter errors, a CSV
+of locations — anything that names a file and a line number.
+
+The result is the same editable chunk format used everywhere in bulked: edit it
+in your editor, then pipe it to `bulked apply` to write the changes back.
+
+INPUT FORMATS (auto-detected, override with --format):
+  jsonl  one JSON object per line, e.g. {\"path\":\"src/a.rs\",\"line\":12}
+  json   a JSON array of those same objects
+  csv    a header row naming a path column and a line column, then rows
+  grep   classic `path:line:...` lines, e.g. `grep -n` / `rg -n` output
+
+EXAMPLES:
+  # plain `grep -n` style output straight into the editable format
+  grep -rn 'TODO' src/ | bulked ingest > edits.bk
+
+  # a CSV exported from somewhere else, 5 lines of context
+  bulked ingest locations.csv -C 5 > edits.bk
+
+  # a JSON array of {\"path\", \"line\"} objects
+  bulked ingest --format json locations.json > edits.bk
+
+Now edit edits.bk and run `bulked apply --input edits.bk`.")]
 pub(super) struct IngestArgs {
-    /// Directory or file to search (default: current directory)
-    /// use '-' to read from stdin
+    /// File of locations to read (default: stdin). Use '-' to force stdin.
     #[arg(default_value = None)]
     path: Option<PathBuf>,
 
+    /// Input format. `auto` sniffs jsonl/json/csv/grep from the first bytes.
     #[arg(short, long = "format", default_value = "auto")]
     format: FormatOptions,
 
-    /// Lines of context before and after each match
+    /// Lines of context to include before and after each location
     #[arg(short = 'C', long, default_value = "20")]
     context: usize,
 
-    /// output as plain text (human-readable format)
+    /// Print human-readable text instead of the editable chunk format
     #[arg(long)]
     plain: bool,
 }

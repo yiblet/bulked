@@ -7,6 +7,26 @@ use crate::execute::{Execute, ExecuteConfig};
 use crate::format::Format;
 
 #[derive(Args, Debug)]
+#[command(after_long_help = "\
+`search` is a grep-like recursive search that prints each match together with
+surrounding context as an editable `chunk`. It's the self-contained way to start
+a bulk edit when you want bulked to do the finding; if you'd rather feed in
+another tool's output, use `bulked ingest` instead.
+
+By default it respects `.gitignore` and skips hidden files, just like ripgrep.
+The output is the same chunk format `bulked apply` consumes.
+
+EXAMPLES:
+  # find matches and save the editable format
+  bulked search 'TODO' src/ > edits.bk
+
+  # tighter context, include hidden files, ignore .gitignore
+  bulked search 'fn main' . -C 5 --hidden --no-ignore
+
+  # human-readable view (not meant for `apply`)
+  bulked search 'TODO' src/ --plain
+
+Then edit edits.bk and run `bulked apply --input edits.bk`.")]
 pub(super) struct SearchArgs {
     /// Regex pattern to search for
     pattern: String,
@@ -15,19 +35,19 @@ pub(super) struct SearchArgs {
     #[arg(default_value = ".")]
     path: PathBuf,
 
-    /// Lines of context before and after each match
+    /// Lines of context to include before and after each match
     #[arg(short = 'C', long, default_value = "20")]
     context: usize,
 
-    /// Don't respect .gitignore files
+    /// Search files normally excluded by .gitignore
     #[arg(long)]
     no_ignore: bool,
 
-    /// Include hidden files in search
+    /// Include hidden files and directories in the search
     #[arg(long)]
     hidden: bool,
 
-    /// output as plain text (human-readable format)
+    /// Print human-readable text instead of the editable chunk format
     #[arg(long)]
     plain: bool,
 }

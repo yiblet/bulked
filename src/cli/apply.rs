@@ -8,11 +8,42 @@ use crate::filesystem;
 use crate::format::Format;
 
 #[derive(Args, Debug)]
+#[command(after_long_help = "\
+`apply` reads the (edited) chunk format produced by `bulked ingest` or
+`bulked search`, checks that the chunks are valid, and writes each change back
+into the right place in each file. Text outside chunks is ignored, so notes and
+comments you leave in the file are harmless.
+
+Before writing, every chunk is validated together (errors are reported all at
+once, not one at a time): chunks must stay sorted, must not overlap, must point
+at lines that exist in the file, and must have a non-zero length. If anything
+fails, nothing is written.
+
+THE CHUNK FORMAT:
+  @path/to/file.rs:<start-line>:<num-lines>
+  <the replacement content for those lines>
+  @@@
+
+  * Use `@@@-` instead of `@@@` to mean \"no trailing newline at end of file\".
+  * Inside content, write `\\@` for a literal `@` and `\\\\` for a literal `\\`.
+  * You may add, remove, or change lines freely inside a chunk — the line count
+    in the header describes the ORIGINAL lines being replaced.
+
+EXAMPLES:
+  # preview what would change, without touching anything
+  bulked apply --input edits.bk --dry-run
+
+  # apply the edits from a file
+  bulked apply --input edits.bk
+
+  # apply edits straight from a pipe
+  bulked ingest locations.csv | my-edit-script | bulked apply")]
 pub(super) struct ApplyArgs {
-    /// Input file containing the format to apply (reads from stdin if not specified)
+    /// Edited chunk file to apply (reads from stdin if not specified)
     #[arg(short, long)]
     input: Option<PathBuf>,
 
+    /// Validate and report what would change, without writing any files
     #[arg(short, long)]
     dry_run: bool,
 }
