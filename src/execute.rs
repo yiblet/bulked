@@ -47,6 +47,9 @@ pub struct ExecuteConfig {
 
     /// Whether to include hidden files
     pub hidden: bool,
+
+    /// Whether to include bulked's own `.bk` output files in the search
+    pub include_bk: bool,
 }
 
 impl ExecuteConfig {
@@ -58,6 +61,7 @@ impl ExecuteConfig {
             context_lines: 20,
             respect_gitignore: true,
             hidden: false,
+            include_bk: false,
         }
     }
 
@@ -79,6 +83,13 @@ impl ExecuteConfig {
     #[must_use]
     pub fn with_hidden(mut self, hidden: bool) -> Self {
         self.hidden = hidden;
+        self
+    }
+
+    /// Set whether to include bulked's own `.bk` output files (default: false)
+    #[must_use]
+    pub fn with_include_bk(mut self, include_bk: bool) -> Self {
+        self.include_bk = include_bk;
         self
     }
 }
@@ -112,7 +123,12 @@ impl Execute {
 
         let matcher = GrepMatcher::compile(&config.pattern)?.with_context(config.context_lines);
 
-        let walker = IgnoreWalker::new(&config.path, config.respect_gitignore, config.hidden);
+        let walker = IgnoreWalker::new(
+            &config.path,
+            config.respect_gitignore,
+            config.hidden,
+            config.include_bk,
+        );
 
         Ok(Self {
             searcher: Searcher::new(fs, matcher, walker),

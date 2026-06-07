@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    io::{BufRead, BufReader, IsTerminal, Read},
+    io::{BufRead, BufReader, BufWriter, IsTerminal, Read, Write},
     path::PathBuf,
     str::FromStr,
 };
@@ -293,11 +293,14 @@ EXAMPLES:
   # plain `grep -n` style output straight into the editable format
   grep -rn 'TODO' src/ | bulked ingest > edits.bk
 
+  # write to a file with -o (instead of redirecting)
+  grep -rn 'TODO' src/ | bulked ingest -o edits.bk
+
   # a CSV exported from somewhere else, 5 lines of context
-  bulked ingest locations.csv -C 5 > edits.bk
+  bulked ingest locations.csv -C 5 -o edits.bk
 
   # a JSON array of {\"path\", \"line\"} objects
-  bulked ingest --format json locations.json > edits.bk
+  bulked ingest --format json locations.json -o edits.bk
 
 Now edit edits.bk and run `bulked apply --input edits.bk`.")]
 pub(super) struct IngestArgs {
@@ -308,6 +311,10 @@ pub(super) struct IngestArgs {
     /// Input format. `auto` sniffs jsonl/json/csv/grep from the first bytes.
     #[arg(short, long = "format", default_value = "auto")]
     format: FormatOptions,
+
+    /// Write the editable format to this file instead of stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 
     /// Lines of context to include before and after each location
     #[arg(short = 'C', long, default_value = "20")]
@@ -357,7 +364,6 @@ impl IngestArgs {
     }
 
     pub fn handle(self) -> Result<(), super::Error> {
-        let is_tty = std::io::stdout().is_terminal();
         let inputs = self.get_inputs()?;
 
         let result = crate::ingest::ingest(
@@ -367,7 +373,28 @@ impl IngestArgs {
         )?;
 
         let format = crate::format::Format::from_matches(&result);
-        print!("{}", format.display(self.plain, is_tty));
+
+        // When writing to a file, never colorize (it's not a terminal).
+        let mut sink: Box<dyn Write> = match &self.output {
+            Some(path) => Box::new(BufWriter::new(std::fs::File::create(path)?)),
+            None => Box::new(std::io::stdout()),
+        };
+        let is_tty = self.output.is_none() && std::io::stdout().is_terminal();
+
+        write!(sink, "{}", format.display(self.plain, is_tty))?;
+        sink.flush()?;
+
+        // When the output went to a file, report a status line to stderr.
+        if let Some(path) = &self.output {
+            let chunks = format.len();
+            let plural = if chunks == 1 { "chunk" } else { "chunks" };
+            eprintln!(
+                "bulked ingest wrote {} {} to {}",
+                chunks,
+                plural,
+                path.display()
+            );
+        }
 
         Ok(())
     }

@@ -16,6 +16,7 @@ pub struct IgnoreWalker {
     root: PathBuf,
     respect_gitignore: bool,
     include_hidden: bool,
+    include_bk: bool,
 }
 
 impl IgnoreWalker {
@@ -26,11 +27,18 @@ impl IgnoreWalker {
     /// * `root` - Root directory to start walking from
     /// * `respect_gitignore` - Whether to respect .gitignore files
     /// * `hidden` - Whether to include hidden files
-    pub fn new(root: impl AsRef<Path>, respect_gitignore: bool, hidden: bool) -> Self {
+    /// * `include_bk` - Whether to include bulked's own `.bk` output files
+    pub fn new(
+        root: impl AsRef<Path>,
+        respect_gitignore: bool,
+        hidden: bool,
+        include_bk: bool,
+    ) -> Self {
         Self {
             root: root.as_ref().to_path_buf(),
             respect_gitignore,
             include_hidden: hidden,
+            include_bk,
         }
     }
 }
@@ -56,11 +64,16 @@ impl Walker for IgnoreWalker {
 
         let walker = walker.build();
 
+        // Skip bulked's own output format so search never matches the files it
+        // (or a previous run) produced, unless the caller opts in with --include-bk.
+        let include_bk = self.include_bk;
+
         Box::new(
             walker
                 .filter_map(std::result::Result::ok)
                 .filter(|entry| entry.file_type().is_some_and(|ft| ft.is_file()))
-                .map(|entry| entry.path().to_path_buf()),
+                .map(|entry| entry.path().to_path_buf())
+                .filter(move |path| include_bk || path.extension().is_none_or(|ext| ext != "bk")),
         )
     }
 }

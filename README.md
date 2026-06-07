@@ -76,11 +76,14 @@ tool into bulked.
 # plain `grep -n` style output straight into the editable format
 grep -rn 'TODO' src/ | bulked ingest > edits.bk
 
+# write to a file with -o (instead of redirecting)
+grep -rn 'TODO' src/ | bulked ingest -o edits.bk
+
 # a CSV exported from somewhere else, 5 lines of context
-bulked ingest locations.csv -C 5 > edits.bk
+bulked ingest locations.csv -C 5 -o edits.bk
 
 # a JSON array of {"path", "line"} objects
-bulked ingest --format json locations.json > edits.bk
+bulked ingest --format json locations.json -o edits.bk
 ```
 
 Input formats are auto-detected (override with `--format`):
@@ -96,14 +99,20 @@ Input formats are auto-detected (override with `--format`):
 
 `search` is a grep-like recursive search that emits the same editable chunk
 format. It's the self-contained way to start a bulk edit when you want bulked to
-do the finding. By default it respects `.gitignore` and skips hidden files.
+do the finding. By default it respects `.gitignore`, skips hidden files, and
+skips bulked's own `.bk` output files (so search never matches the files it
+produced). You can write the result straight to a file with `-o`/`--output`.
 
 ```bash
-# find matches and save the editable format
+# find matches and save the editable format (redirect, or -o)
 bulked search 'TODO' src/ > edits.bk
+bulked search 'TODO' src/ -o edits.bk
 
 # tighter context, include hidden files, ignore .gitignore
 bulked search 'fn main' . -C 5 --hidden --no-ignore
+
+# also search previously generated .bk files
+bulked search 'TODO' . --include-bk
 
 # human-readable view (not meant for `apply`)
 bulked search 'TODO' src/ --plain
@@ -138,6 +147,7 @@ bulked ingest locations.csv | my-edit-script | bulked apply
 
 - `path`: File of locations to read (default: stdin; use `-` to force stdin)
 - `-f, --format <FORMAT>`: Input format — `auto` (default), `jsonl`, `json`, `csv`, `grep`
+- `-o, --output <FILE>`: Write the editable format to this file (default: stdout)
 - `-C, --context <LINES>`: Lines of context before and after each location (default: 20)
 - `--plain`: Print human-readable text instead of the editable chunk format
 
@@ -145,9 +155,11 @@ bulked ingest locations.csv | my-edit-script | bulked apply
 
 - `pattern`: Regex pattern to search for (required)
 - `path`: Directory or file to search (default: current directory)
+- `-o, --output <FILE>`: Write the editable format to this file (default: stdout)
 - `-C, --context <LINES>`: Lines of context before and after each match (default: 20)
 - `--no-ignore`: Search files normally excluded by `.gitignore`
 - `--hidden`: Include hidden files and directories in the search
+- `--include-bk`: Also search bulked's own `.bk` output files (excluded by default)
 - `--plain`: Print human-readable text instead of the editable chunk format
 
 ### `apply`
