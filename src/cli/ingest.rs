@@ -49,7 +49,7 @@ impl FormatOptions {
         }
 
         let guess = Format::guess(&cur[..total]);
-        let buf: VecDeque<u8> = VecDeque::from(cur);
+        let buf: VecDeque<u8> = VecDeque::from(cur[..total].to_vec());
         EitherIter::Right(EitherIter::Right(guess.parse(buf.chain(r))))
     }
 }

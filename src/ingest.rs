@@ -143,11 +143,13 @@ fn process_range(
         return Ok(None);
     }
 
-    // Read context before target line
-    while positions.line >= range.start && positions.line < range.line {
+    // Read context before target line.
+    // Capture the line number before read_line advances positions.line to the next line.
+    while positions.line < range.line {
+        let line_number = positions.line;
         read_line(reader, buf, positions)?;
         context_before.push(ContextLine {
-            line_number: positions.line,
+            line_number,
             content: std::mem::take(buf),
         });
     }
@@ -163,12 +165,13 @@ fn process_range(
 
     // Read context after target line
     while positions.line < range.end {
+        let line_number = positions.line;
         match read_line(reader, buf, positions) {
             Err(IngestError::UnexpectedEOF { .. }) => break,
             e => e?,
         };
         context_after.push(ContextLine {
-            line_number: positions.line,
+            line_number,
             content: std::mem::take(buf),
         });
     }
@@ -415,7 +418,9 @@ mod tests {
         assert_eq!(result.line_content, "line3\n");
         assert_eq!(result.context_before.len(), 0);
         assert_eq!(result.context_after.len(), 1);
-        assert_eq!(result.context_after[0].line_number, 5);
+        // range.end is 5 (exclusive), so the after-context line read is line 4
+        assert_eq!(result.context_after[0].line_number, 4);
+        assert_eq!(result.context_after[0].content, "line4\n");
     }
 
     #[test]
@@ -510,10 +515,10 @@ mod tests {
         assert_eq!(result.line_number, 3);
         assert_eq!(result.line_content, "line3\n");
         assert_eq!(result.context_before.len(), 1);
-        assert_eq!(result.context_before[0].line_number, 3);
+        assert_eq!(result.context_before[0].line_number, 2);
         assert_eq!(result.context_before[0].content, "line2\n");
         assert_eq!(result.context_after.len(), 1);
-        assert_eq!(result.context_after[0].line_number, 5);
+        assert_eq!(result.context_after[0].line_number, 4);
         assert_eq!(result.context_after[0].content, "line4\n");
     }
 }
