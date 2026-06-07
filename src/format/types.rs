@@ -479,9 +479,8 @@ fn display_format(f: &mut fmt::Formatter, format: &Format, highlight: bool) -> s
 fn display_plain(f: &mut fmt::Formatter, format: &Format, highlight: bool) -> std::fmt::Result {
     for chunk in format.0.iter() {
         writeln!(f, "\n{}:{}", chunk.path.display(), chunk.start_line)?;
-        let mut line_no = chunk.start_line;
         let mut bytes = 0;
-        for line in chunk.content.split_inclusive('\n') {
+        for (line_no, line) in (chunk.start_line..).zip(chunk.content.split_inclusive('\n')) {
             let start = bytes;
             let end = bytes + line.len();
             match chunk.match_range.as_ref() {
@@ -512,7 +511,6 @@ fn display_plain(f: &mut fmt::Formatter, format: &Format, highlight: bool) -> st
                 }
             }
 
-            line_no += 1;
             bytes += line.len();
         }
     }
