@@ -39,7 +39,7 @@ pub(super) struct SearchArgs {
 
     /// Directory or file to search (default: current directory)
     #[arg(default_value = ".")]
-    path: PathBuf,
+    paths: Vec<PathBuf>,
 
     /// Write the editable format to this file instead of stdout
     #[arg(short, long)]
@@ -69,7 +69,7 @@ pub(super) struct SearchArgs {
 impl SearchArgs {
     pub fn handle(self) -> Result<(), super::Error> {
         // Configure and execute search
-        let config = ExecuteConfig::new(self.pattern, self.path)
+        let config = ExecuteConfig::new(self.pattern, self.paths)
             .with_context_lines(self.context)
             .with_respect_gitignore(!self.no_ignore)
             .with_hidden(self.hidden)

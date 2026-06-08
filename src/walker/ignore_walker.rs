@@ -6,14 +6,14 @@
 
 use super::Walker;
 use ignore::WalkBuilder;
-use std::path::{Path, PathBuf};
+use std::{collections::HashSet, path::PathBuf, sync::Mutex};
 
 /// Production walker using ignore crate
 ///
 /// This walker respects .gitignore files and other ignore patterns.
 /// It's used in production to efficiently traverse large directory trees.
 pub struct IgnoreWalker {
-    root: PathBuf,
+    roots: Vec<PathBuf>,
     respect_gitignore: bool,
     include_hidden: bool,
     include_bk: bool,
@@ -29,13 +29,13 @@ impl IgnoreWalker {
     /// * `hidden` - Whether to include hidden files
     /// * `include_bk` - Whether to include bulked's own `.bk` output files
     pub fn new(
-        root: impl AsRef<Path>,
+        roots: Vec<PathBuf>,
         respect_gitignore: bool,
         hidden: bool,
         include_bk: bool,
     ) -> Self {
         Self {
-            root: root.as_ref().to_path_buf(),
+            roots,
             respect_gitignore,
             include_hidden: hidden,
             include_bk,
@@ -45,7 +45,14 @@ impl IgnoreWalker {
 
 impl Walker for IgnoreWalker {
     fn files(&self) -> Box<dyn Iterator<Item = PathBuf> + '_> {
-        let mut walker = WalkBuilder::new(&self.root);
+        let Some((root, rem)) = self.roots.split_first() else {
+            return Box::new(std::iter::empty());
+        };
+
+        let mut walker = WalkBuilder::new(root);
+        for path in rem {
+            walker.add(path);
+        }
 
         let walker = walker
             .git_ignore(self.respect_gitignore)
@@ -53,13 +60,39 @@ impl Walker for IgnoreWalker {
             .git_exclude(self.respect_gitignore)
             .hidden(!self.include_hidden);
 
+        let visited = Mutex::new(HashSet::new());
+
         let walker = if self.respect_gitignore {
-            walker.filter_entry(|entry| {
+            walker.filter_entry(move |entry| {
                 // Always skip .git directories
-                entry.file_name() != ".git"
+                if entry.file_name() == ".git" {
+                    return false;
+                }
+
+                let Ok(mut visited) = visited.lock() else {
+                    return true;
+                };
+                // Skip visited files
+                if visited.contains(entry.path()) {
+                    return false;
+                }
+
+                visited.insert(entry.path().to_path_buf());
+                true
             })
         } else {
-            walker
+            walker.filter_entry(move |entry| {
+                let Ok(mut visited) = visited.lock() else {
+                    return true;
+                };
+                // Skip visited files
+                if visited.contains(entry.path()) {
+                    return false;
+                }
+
+                visited.insert(entry.path().to_path_buf());
+                true
+            })
         };
 
         let walker = walker.build();

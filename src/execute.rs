@@ -37,7 +37,7 @@ pub struct ExecuteConfig {
     pub pattern: String,
 
     /// Root directory or file to search
-    pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
 
     /// Number of context lines before and after each match
     pub context_lines: usize,
@@ -54,10 +54,10 @@ pub struct ExecuteConfig {
 
 impl ExecuteConfig {
     /// Create a new configuration with the given pattern and path
-    pub fn new(pattern: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+    pub fn new(pattern: impl Into<String>, paths: Vec<PathBuf>) -> Self {
         Self {
             pattern: pattern.into(),
-            path: path.into(),
+            paths,
             context_lines: 20,
             respect_gitignore: true,
             hidden: false,
@@ -124,7 +124,7 @@ impl Execute {
         let matcher = GrepMatcher::compile(&config.pattern)?.with_context(config.context_lines);
 
         let walker = IgnoreWalker::new(
-            &config.path,
+            config.paths.clone(),
             config.respect_gitignore,
             config.hidden,
             config.include_bk,
@@ -150,19 +150,19 @@ mod tests {
 
     #[test]
     fn test_execute_config_builder() {
-        let config = ExecuteConfig::new("test", "/path")
+        let config = ExecuteConfig::new("test", vec!["/path".into()])
             .with_context_lines(10)
             .with_respect_gitignore(false);
 
         assert_eq!(config.pattern, "test");
-        assert_eq!(config.path, PathBuf::from("/path"));
+        assert_eq!(config.paths, vec![PathBuf::from("/path")]);
         assert_eq!(config.context_lines, 10);
         assert!(!config.respect_gitignore);
     }
 
     #[test]
     fn test_execute_config_defaults() {
-        let config = ExecuteConfig::new("pattern", "/some/path");
+        let config = ExecuteConfig::new("pattern", vec!["/some/path".into()]);
 
         assert_eq!(config.context_lines, 20);
         assert!(config.respect_gitignore);
