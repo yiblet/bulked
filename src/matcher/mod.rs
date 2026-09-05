@@ -11,6 +11,7 @@ use thiserror::Error;
 use grep::regex::Error as GrepRegexError;
 
 pub mod regex;
+#[cfg(test)]
 pub mod stub;
 
 /// Errors that can occur during pattern matching operations
@@ -49,34 +50,33 @@ pub struct MatchInfo {
     pub next_lines: String,
 }
 
+/// What a [`Matcher`] should search.
+///
+/// The searcher hands a [`Source::Path`] when the filesystem can expose a real
+/// on-disk path (so the matcher may memory-map or stream it) and a
+/// [`Source::Content`] when the file had to be read into memory first (e.g. an
+/// in-memory test filesystem). Implementations must produce the same matches
+/// for the same bytes regardless of which variant they receive.
+#[derive(Debug, Clone, Copy)]
+pub enum Source<'a> {
+    /// A real file on disk, searched in place.
+    Path(&'a Path),
+    /// File contents already in memory.
+    Content(&'a str),
+}
+
 /// Abstract pattern matching interface
 ///
 /// This trait provides regex matching operations. Implementations can be
 /// backed by actual regex engines (`GrepMatcher`) or provide canned responses
 /// for testing (`StubMatcher`).
 pub trait Matcher: Send + Sync {
-    /// Compile a pattern into a matcher
+    /// Search `src` for matches.
     ///
-    /// Returns an error if the pattern is invalid.
-    fn compile(pattern: &str) -> Result<Self, MatcherError>
-    where
-        Self: Sized;
-
-    /// Search for matches in file content
-    ///
-    /// Returns all matches found in the content, with line numbers and positions.
-    fn search_in_content(&self, content: &str) -> Vec<MatchInfo>;
-
-    /// Check if a single line matches the pattern
-    ///
-    /// This is a helper method for simpler matching scenarios.
-    #[allow(dead_code)]
-    fn is_match(&self, text: &str) -> bool;
-
-    /// Search for matches in file content
-    ///
-    /// Returns all matches found in the content, with line numbers and positions.
-    fn search_path(&self) -> Option<impl FnMut(&Path) -> Result<Vec<MatchInfo>, MatcherError>>;
+    /// Returns every match with its line number, byte offset, the matched
+    /// range within the line, and any configured context lines. I/O and
+    /// decoding failures are returned, never swallowed.
+    fn search(&self, src: Source<'_>) -> Result<Vec<MatchInfo>, MatcherError>;
 }
 
 #[cfg(test)]
@@ -103,13 +103,59 @@ mod tests {
         let matcher = GrepMatcher::compile("hello").unwrap();
         let content = "line 1\nhello world\nline 3\nsay hello\n";
 
-        let matches = matcher.search_in_content(content);
+        let matches = matcher.search(Source::Content(content)).unwrap();
 
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].line_num, 2);
         assert!(matches[0].line_content.contains("hello world"));
         assert_eq!(matches[1].line_num, 4);
         assert!(matches[1].line_content.contains("say hello"));
+    }
+
+    /// The matcher owns real file I/O, so this adapter test writes a real temp
+    /// file and checks that searching it by path yields exactly what searching
+    /// the same bytes as in-memory content yields (line numbers and highlight
+    /// ranges alike).
+    #[test]
+    fn test_grep_matcher_content_and_path_sources_agree() {
+        let content = "a\nhello\nb\nhello world\n";
+        let path = std::env::temp_dir().join(format!(
+            "bulked-matcher-sources-agree-{}-{:?}.txt",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&path, content).unwrap();
+
+        let matcher = GrepMatcher::compile("hello").unwrap();
+        let by_path = matcher.search(Source::Path(&path));
+        let _ = std::fs::remove_file(&path);
+        let by_path = by_path.unwrap();
+        let by_content = matcher.search(Source::Content(content)).unwrap();
+
+        assert_eq!(by_path.len(), 2);
+        assert_eq!(by_path.len(), by_content.len());
+        for (p, c) in by_path.iter().zip(by_content.iter()) {
+            assert_eq!(p.line_num, c.line_num);
+            assert_eq!(p.line_match, c.line_match);
+            assert!(p.line_match.is_some(), "line_match must be populated");
+        }
+        assert_eq!(by_content[0].line_num, 2);
+        assert_eq!(by_content[0].line_match, Some(0..5));
+        assert_eq!(by_content[1].line_num, 4);
+        assert_eq!(by_content[1].line_match, Some(0..5));
+    }
+
+    /// Searching in-memory content must populate `line_match` (previously only
+    /// the on-disk path branch did).
+    #[test]
+    fn test_grep_matcher_content_source_sets_line_match() {
+        let matcher = GrepMatcher::compile("hello").unwrap();
+
+        let matches = matcher.search(Source::Content("say hello\n")).unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].line_num, 1);
+        assert_eq!(matches[0].line_match, Some(4..9));
     }
 
     #[test]
@@ -124,7 +170,7 @@ mod tests {
             next_lines: String::new(),
         });
 
-        let matches = matcher.search_in_content("any content");
+        let matches = matcher.search(Source::Content("any content")).unwrap();
 
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].line_num, 10);

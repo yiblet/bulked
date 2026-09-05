@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::types::{ContextLine, IngestInput, MatchResult};
+use crate::types::{IngestInput, MatchResult};
 
 #[derive(thiserror::Error, Debug)]
 pub enum IngestError {
@@ -57,7 +57,7 @@ fn create_ranges(iter: impl Iterator<Item = usize>, context: usize) -> Vec<Range
 }
 
 pub fn ingest(
-    fs: &dyn crate::filesystem::FileSystem,
+    fs: &dyn crate::filesystem::ReadFs,
     inputs: Vec<IngestInput>,
     context: usize,
 ) -> Result<Vec<MatchResult>, IngestError> {
@@ -97,7 +97,7 @@ fn group_inputs_by_path_and_create_ranges(
 }
 
 fn process_file(
-    fs: &dyn crate::filesystem::FileSystem,
+    fs: &dyn crate::filesystem::ReadFs,
     path: &PathBuf,
     ranges: BTreeSet<Range>,
 ) -> Result<impl Iterator<Item = Result<MatchResult, IngestError>>, IngestError> {
@@ -130,9 +130,9 @@ fn process_range(
     range: Range,
     path: &Path,
 ) -> Result<Option<MatchResult>, IngestError> {
-    let mut context_before = Vec::new();
+    let mut context_before = String::new();
     let mut line_string = String::new();
-    let mut context_after = Vec::new();
+    let mut context_after = String::new();
 
     // Skip to range start
     while positions.line < range.start {
@@ -143,15 +143,11 @@ fn process_range(
         return Ok(None);
     }
 
-    // Read context before target line.
-    // Capture the line number before read_line advances positions.line to the next line.
+    // Read context before target line. Each line keeps its trailing '\n', so
+    // the accumulated string is a run of newline-terminated lines.
     while positions.line < range.line {
-        let line_number = positions.line;
         read_line(reader, buf, positions)?;
-        context_before.push(ContextLine {
-            line_number,
-            content: std::mem::take(buf),
-        });
+        context_before.push_str(buf);
     }
 
     if positions.line != range.line {
@@ -165,15 +161,11 @@ fn process_range(
 
     // Read context after target line
     while positions.line < range.end {
-        let line_number = positions.line;
         match read_line(reader, buf, positions) {
             Err(IngestError::UnexpectedEOF { .. }) => break,
             e => e?,
         };
-        context_after.push(ContextLine {
-            line_number,
-            content: std::mem::take(buf),
-        });
+        context_after.push_str(buf);
     }
 
     Ok(Some(MatchResult {
@@ -220,7 +212,7 @@ fn read_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filesystem::FileSystem;
+    use crate::filesystem::ReadFs;
 
     #[test]
     fn test_create_ranges_multiple_lines() {
@@ -416,11 +408,9 @@ mod tests {
 
         assert_eq!(result.line_number, 3);
         assert_eq!(result.line_content, "line3\n");
-        assert_eq!(result.context_before.len(), 0);
-        assert_eq!(result.context_after.len(), 1);
+        assert_eq!(result.context_before, "");
         // range.end is 5 (exclusive), so the after-context line read is line 4
-        assert_eq!(result.context_after[0].line_number, 4);
-        assert_eq!(result.context_after[0].content, "line4\n");
+        assert_eq!(result.context_after, "line4\n");
     }
 
     #[test]
@@ -514,11 +504,38 @@ mod tests {
 
         assert_eq!(result.line_number, 3);
         assert_eq!(result.line_content, "line3\n");
-        assert_eq!(result.context_before.len(), 1);
-        assert_eq!(result.context_before[0].line_number, 2);
-        assert_eq!(result.context_before[0].content, "line2\n");
-        assert_eq!(result.context_after.len(), 1);
-        assert_eq!(result.context_after[0].line_number, 4);
-        assert_eq!(result.context_after[0].content, "line4\n");
+        assert_eq!(result.context_before, "line2\n");
+        assert_eq!(result.context_after, "line4\n");
+    }
+
+    #[test]
+    fn test_ingest_context_strings_are_newline_terminated() {
+        // Every context line ingested from a file with trailing newlines keeps
+        // its '\n', so the context strings are runs of newline-terminated lines
+        // that `Format::from_matches` can count and concatenate directly.
+        let fs = crate::filesystem::memory::MemoryFS::new();
+        let path = PathBuf::from("test.txt");
+        fs.write_string(&path, "line1\nline2\nline3\nline4\nline5\n")
+            .unwrap();
+
+        let inputs = vec![IngestInput {
+            file_path: path.clone(),
+            line_number: 3,
+        }];
+        let results = ingest(&fs, inputs, 2).unwrap();
+
+        assert_eq!(results.len(), 1);
+        let result = &results[0];
+        assert_eq!(result.file_path, path);
+        assert_eq!(result.line_number, 3);
+        assert_eq!(result.line_content, "line3\n");
+        assert_eq!(result.context_before, "line1\nline2\n");
+        assert_eq!(result.context_after, "line4\nline5\n");
+
+        for ctx in [&result.context_before, &result.context_after] {
+            assert!(ctx.ends_with('\n'));
+            assert_eq!(ctx.split_inclusive('\n').count(), 2);
+            assert!(ctx.split_inclusive('\n').all(|l| l.ends_with('\n')));
+        }
     }
 }

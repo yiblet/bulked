@@ -3,7 +3,7 @@
 //! This module provides `MemoryFS`, a fake filesystem that stores all data in memory.
 //! It's used for hermetic testing without touching the real filesystem.
 
-use super::{FileSystem, FilesystemError};
+use super::{FilesystemError, ReadFs, WriteFs};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
@@ -15,13 +15,16 @@ use std::sync::{Arc, RwLock};
 /// This is a "fake" implementation that provides a working filesystem
 /// entirely in memory. It's fast, deterministic, and allows complete
 /// control over the filesystem state in tests.
-#[allow(dead_code)]
+///
+/// Besides implementing [`ReadFs`] + [`WriteFs`], it offers inherent
+/// whole-string helpers (`add_file`, `read_to_string`, `write_string`,
+/// `exists`, `file_count`) that tests use to set up and inspect state. Those
+/// are deliberately *not* part of the trait surface.
 #[derive(Clone)]
 pub(crate) struct MemoryFS {
     files: Arc<RwLock<HashMap<PathBuf, Vec<u8>>>>,
 }
 
-#[allow(dead_code)]
 impl MemoryFS {
     /// Create a new empty in-memory filesystem
     pub fn new() -> Self {
@@ -42,8 +45,33 @@ impl MemoryFS {
         Ok(())
     }
 
+    /// Read the entire contents of a file as a string (test helper).
+    ///
+    /// Invalid UTF-8 is reported as a `ReadError` whose source is an
+    /// `io::Error` of kind `InvalidData`, mirroring what a caller of
+    /// [`ReadFs::read`] + `Read::read_to_string` would observe.
+    pub fn read_to_string(&self, path: &Path) -> Result<String, FilesystemError> {
+        let bytes = self.bytes(path)?;
+        String::from_utf8(bytes).map_err(|e| FilesystemError::ReadError {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+        })
+    }
+
+    /// Replace the whole contents of a file with `content` (test helper).
+    pub fn write_string(&self, path: &Path, content: &str) -> Result<(), FilesystemError> {
+        self.add_file(path, content)
+    }
+
+    /// Whether `path` is stored (test helper).
+    pub fn exists(&self, path: &Path) -> bool {
+        self.files
+            .read()
+            .map(|files| files.contains_key(path))
+            .unwrap_or(false)
+    }
+
     /// Number of files currently stored (test helper for asserting temp cleanup).
-    #[cfg(test)]
     pub fn file_count(&self) -> usize {
         self.files.read().map(|files| files.len()).unwrap_or(0)
     }
@@ -54,6 +82,16 @@ impl MemoryFS {
             files.clear();
         }
     }
+
+    fn bytes(&self, path: &Path) -> Result<Vec<u8>, FilesystemError> {
+        let files = self.files.read().map_err(|_| FilesystemError::LockError)?;
+        files
+            .get(path)
+            .cloned()
+            .ok_or_else(|| FilesystemError::FileNotFound {
+                path: path.to_path_buf(),
+            })
+    }
 }
 
 impl Default for MemoryFS {
@@ -62,38 +100,18 @@ impl Default for MemoryFS {
     }
 }
 
-impl FileSystem for MemoryFS {
+impl ReadFs for MemoryFS {
     fn as_real_path<'a>(&self, _: &'a Path) -> Option<Cow<'a, Path>> {
         None
     }
 
     fn read(&self, path: &Path) -> Result<Box<dyn std::io::Read>, FilesystemError> {
-        let st = self.read_to_string(path)?;
-        let vec = Vec::from(st);
-        Ok(Box::new(std::io::Cursor::new(vec)))
+        let bytes = self.bytes(path)?;
+        Ok(Box::new(std::io::Cursor::new(bytes)))
     }
+}
 
-    fn read_to_string(&self, path: &Path) -> Result<String, FilesystemError> {
-        let files = self.files.read().map_err(|_| FilesystemError::LockError)?;
-
-        let bytes = files
-            .get(path)
-            .ok_or_else(|| FilesystemError::FileNotFound {
-                path: path.to_path_buf(),
-            })?;
-
-        String::from_utf8(bytes.clone()).map_err(|source| FilesystemError::InvalidUtf8 {
-            path: path.to_path_buf(),
-            source,
-        })
-    }
-
-    fn write_string(&self, path: &Path, content: &str) -> Result<(), FilesystemError> {
-        let mut files = self.files.write().map_err(|_| FilesystemError::LockError)?;
-        files.insert(path.to_path_buf(), content.as_bytes().to_vec());
-        Ok(())
-    }
-
+impl WriteFs for MemoryFS {
     fn writer(&self, path: &Path) -> Result<Box<dyn std::io::Write>, FilesystemError> {
         Ok(Box::new(MemoryWriter {
             files: Arc::clone(&self.files),
@@ -121,18 +139,6 @@ impl FileSystem for MemoryFS {
                 path: path.to_path_buf(),
             })?;
         Ok(())
-    }
-
-    fn exists(&self, path: &Path) -> bool {
-        self.files
-            .read()
-            .map(|files| files.contains_key(path))
-            .unwrap_or(false)
-    }
-
-    fn is_file(&self, path: &Path) -> bool {
-        // In MemoryFS, everything stored is a file
-        self.exists(path)
     }
 }
 
@@ -182,7 +188,6 @@ mod tests {
         fs.add_file(&path, content).unwrap();
 
         assert!(fs.exists(&path));
-        assert!(fs.is_file(&path));
         assert_eq!(fs.read_to_string(&path).unwrap(), content);
     }
 
@@ -192,7 +197,28 @@ mod tests {
         let path = PathBuf::from("/nonexistent.txt");
 
         assert!(!fs.exists(&path));
-        assert!(fs.read_to_string(&path).is_err());
+        assert!(matches!(
+            fs.read_to_string(&path),
+            Err(FilesystemError::FileNotFound { .. })
+        ));
+        assert!(matches!(
+            fs.read(&path),
+            Err(FilesystemError::FileNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn test_memory_fs_read_to_string_rejects_invalid_utf8() {
+        let fs = MemoryFS::new();
+        let path = PathBuf::from("/bin");
+        fs.add_file_bytes(&path, &[0xff, 0xfe]).unwrap();
+
+        match fs.read_to_string(&path) {
+            Err(FilesystemError::ReadError { source, .. }) => {
+                assert_eq!(source.kind(), std::io::ErrorKind::InvalidData);
+            }
+            other => panic!("expected ReadError(InvalidData), got {other:?}"),
+        }
     }
 
     #[test]

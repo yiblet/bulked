@@ -4,9 +4,7 @@
 //! crates to perform fast regex matching. This is the production implementation
 //! based on the same infrastructure used by ripgrep and Helix.
 
-use std::path::Path;
-
-use super::{MatchInfo, Matcher, MatcherError};
+use super::{MatchInfo, Matcher, MatcherError, Source};
 use grep::matcher::Matcher as GrepMatcherTrait;
 use grep::regex::RegexMatcher as GrepRegexMatcher;
 use grep::searcher::{BinaryDetection, Searcher, SearcherBuilder};
@@ -97,9 +95,27 @@ mod sink {
 }
 
 impl GrepMatcher {
+    /// Compile `pattern` into a matcher with no context lines.
+    ///
+    /// Returns [`MatcherError::InvalidPattern`] if the regex does not compile.
+    pub fn compile(pattern: &str) -> Result<Self, MatcherError> {
+        let matcher =
+            GrepRegexMatcher::new(pattern).map_err(|source| MatcherError::InvalidPattern {
+                pattern: pattern.to_string(),
+                source,
+            })?;
+
+        Ok(Self {
+            matcher,
+            context: 0,
+        })
+    }
+
+    /// Set the number of context lines captured before and after each match.
+    #[must_use]
     pub fn with_context(self, context: usize) -> Self {
         Self {
-            matcher: self.matcher.clone(),
+            matcher: self.matcher,
             context,
         }
     }
@@ -122,67 +138,43 @@ impl GrepMatcher {
 
         searcher.build()
     }
+
+    /// Fill in `line_match` for every collected match by re-running the regex
+    /// on the matched line. The grep sink only reports whole lines, so this
+    /// post-pass is what gives callers the highlight range within the line.
+    fn annotate_line_matches(&self, matches: &mut [MatchInfo]) {
+        for cur_match in matches {
+            let Ok(Some(m)) = self.matcher.find_at(cur_match.line_content.as_bytes(), 0) else {
+                continue;
+            };
+
+            cur_match.line_match = Some(m.start()..m.end());
+        }
+    }
 }
 
 impl Matcher for GrepMatcher {
-    fn compile(pattern: &str) -> Result<Self, MatcherError>
-    where
-        Self: Sized,
-    {
-        let matcher =
-            GrepRegexMatcher::new(pattern).map_err(|source| MatcherError::InvalidPattern {
-                pattern: pattern.to_string(),
-                source,
-            })?;
-
-        Ok(Self {
-            matcher,
-            context: 0,
-        })
-    }
-
-    fn search_in_content(&self, content: &str) -> Vec<MatchInfo> {
+    fn search(&self, src: Source<'_>) -> Result<Vec<MatchInfo>, MatcherError> {
         let mut matches = Vec::new();
-
         let mut searcher = self.build_searcher();
-        // Use UTF8 sink to collect matches
-        let result = searcher.search_slice(
-            &self.matcher,
-            content.as_bytes(),
-            sink::UTF8::new(&mut matches),
-        );
 
-        // Log any errors but don't fail
-        if let Err(e) = result {
-            tracing::warn!("Search error: {}", e);
-        }
-
-        matches
-    }
-
-    fn is_match(&self, text: &str) -> bool {
-        self.matcher.is_match(text.as_bytes()).unwrap_or(false)
-    }
-
-    fn search_path(&self) -> Option<impl FnMut(&Path) -> Result<Vec<MatchInfo>, MatcherError>> {
-        Some(move |path: &Path| {
-            let mut matches = Vec::new();
-            let mut searcher = self.build_searcher();
-            // Use UTF8 sink to collect matches
-            searcher
-                .search_path(&self.matcher, path, sink::UTF8::new(&mut matches))
-                .map_err(|source| MatcherError::SearchError { source })?;
-
-            for cur_match in &mut matches {
-                let Ok(Some(m)) = self.matcher.find_at(cur_match.line_content.as_bytes(), 0) else {
-                    continue;
-                };
-
-                cur_match.line_match = Some(m.start()..m.end());
+        // Both branches collect through the same UTF8 sink, so a path and its
+        // in-memory contents yield identical matches.
+        match src {
+            Source::Path(path) => {
+                searcher.search_path(&self.matcher, path, sink::UTF8::new(&mut matches))
             }
+            Source::Content(content) => searcher.search_slice(
+                &self.matcher,
+                content.as_bytes(),
+                sink::UTF8::new(&mut matches),
+            ),
+        }
+        .map_err(|source| MatcherError::SearchError { source })?;
 
-            Ok(matches)
-        })
+        self.annotate_line_matches(&mut matches);
+
+        Ok(matches)
     }
 }
 
@@ -191,13 +183,18 @@ impl Matcher for GrepMatcher {
 mod tests {
     use super::*;
 
+    /// `true` when the pattern matches somewhere in `text` (searched as content).
+    fn matches_somewhere(matcher: &GrepMatcher, text: &str) -> bool {
+        !matcher.search(Source::Content(text)).unwrap().is_empty()
+    }
+
     #[test]
     fn test_grep_matcher_simple_pattern() {
         let matcher = GrepMatcher::compile("test").unwrap();
 
-        assert!(matcher.is_match("this is a test"));
-        assert!(matcher.is_match("test"));
-        assert!(!matcher.is_match("no match here"));
+        assert!(matches_somewhere(&matcher, "this is a test"));
+        assert!(matches_somewhere(&matcher, "test"));
+        assert!(!matches_somewhere(&matcher, "no match here"));
     }
 
     #[test]
@@ -205,11 +202,11 @@ mod tests {
         let matcher = GrepMatcher::compile("fo+bar").unwrap();
 
         // "fo+bar" means "f" followed by one or more "o" followed by "bar"
-        assert!(matcher.is_match("foobar")); // Two o's
-        assert!(matcher.is_match("fooooobar")); // Many o's
-        assert!(matcher.is_match("fobar")); // One o (minimum required by +)
-        assert!(!matcher.is_match("fbar")); // No o, should not match
-        assert!(!matcher.is_match("f bar")); // Space instead of o
+        assert!(matches_somewhere(&matcher, "foobar")); // Two o's
+        assert!(matches_somewhere(&matcher, "fooooobar")); // Many o's
+        assert!(matches_somewhere(&matcher, "fobar")); // One o (minimum required by +)
+        assert!(!matches_somewhere(&matcher, "fbar")); // No o, should not match
+        assert!(!matches_somewhere(&matcher, "f bar")); // Space instead of o
     }
 
     #[test]
@@ -217,7 +214,7 @@ mod tests {
         let matcher = GrepMatcher::compile("match").unwrap();
         let content = "line 1\nthis is a match\nline 3\nanother match here\nline 5";
 
-        let matches = matcher.search_in_content(content);
+        let matches = matcher.search(Source::Content(content)).unwrap();
 
         assert_eq!(matches.len(), 2);
 
@@ -233,7 +230,7 @@ mod tests {
         let matcher = GrepMatcher::compile("notfound").unwrap();
         let content = "line 1\nline 2\nline 3";
 
-        let matches = matcher.search_in_content(content);
+        let matches = matcher.search(Source::Content(content)).unwrap();
 
         assert_eq!(matches.len(), 0);
     }
@@ -242,8 +239,8 @@ mod tests {
     fn test_grep_matcher_case_sensitive() {
         let matcher = GrepMatcher::compile("Test").unwrap();
 
-        assert!(matcher.is_match("Test"));
-        assert!(!matcher.is_match("test")); // Case sensitive by default
+        assert!(matches_somewhere(&matcher, "Test"));
+        assert!(!matches_somewhere(&matcher, "test")); // Case sensitive by default
     }
 
     #[test]
@@ -257,6 +254,20 @@ mod tests {
     }
 
     #[test]
+    fn test_grep_matcher_missing_path_is_an_error() {
+        let matcher = GrepMatcher::compile("x").unwrap();
+        let missing = std::env::temp_dir().join(format!(
+            "bulked-matcher-missing-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+
+        let err = matcher.search(Source::Path(&missing)).unwrap_err();
+
+        assert!(matches!(err, MatcherError::SearchError { .. }));
+    }
+
+    #[test]
     fn test_grep_matcher_with_context() {
         let matcher = GrepMatcher::compile("MATCH").unwrap().with_context(3);
 
@@ -264,7 +275,7 @@ mod tests {
         let content =
             "line 1\nline 2\nline 3\nline 4\nMATCH line 5\nline 6\nline 7\nline 8\nline 9";
 
-        let matches = matcher.search_in_content(content);
+        let matches = matcher.search(Source::Content(content)).unwrap();
 
         assert_eq!(matches.len(), 1, "Should find exactly one match");
 
@@ -274,8 +285,6 @@ mod tests {
 
         // Check context before (lines 2, 3, 4)
         let before_lines: Vec<&str> = m.previous_lines.split_inclusive('\n').collect();
-        println!("Context before: {before_lines:?}");
-        println!("previous_lines raw: {:?}", m.previous_lines);
         assert_eq!(
             before_lines.len(),
             3,
@@ -287,8 +296,6 @@ mod tests {
 
         // Check context after (lines 6, 7, 8)
         let after_lines: Vec<&str> = m.next_lines.split_inclusive('\n').collect();
-        println!("Context after: {after_lines:?}");
-        println!("next_lines raw: {:?}", m.next_lines);
         assert_eq!(after_lines.len(), 3, "Should have 3 lines of context after");
         assert_eq!(after_lines[0], "line 6\n");
         assert_eq!(after_lines[1], "line 7\n");

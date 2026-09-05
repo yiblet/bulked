@@ -3,9 +3,10 @@
 //! This module provides `PhysicalFS`, which uses the real OS filesystem.
 //! This is the production adapter used by the CLI.
 
-use super::{FileSystem, FilesystemError};
+use super::{FilesystemError, ReadFs, WriteFs};
 use std::borrow::Cow;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 /// Physical filesystem adapter
@@ -22,41 +23,32 @@ impl PhysicalFS {
     }
 }
 
-impl FileSystem for PhysicalFS {
-    fn read_to_string(&self, path: &Path) -> Result<String, FilesystemError> {
-        fs::read_to_string(path).map_err(|source| FilesystemError::ReadError {
-            path: path.to_path_buf(),
-            source,
-        })
-    }
-
-    fn write_string(&self, path: &Path, content: &str) -> Result<(), FilesystemError> {
-        fs::write(path, content).map_err(|source| FilesystemError::WriteError {
-            path: path.to_path_buf(),
-            source,
-        })
-    }
-
+impl ReadFs for PhysicalFS {
     fn as_real_path<'a>(&self, path: &'a Path) -> Option<Cow<'a, Path>> {
         Some(Cow::Borrowed(path))
     }
 
-    fn exists(&self, path: &Path) -> bool {
-        path.exists()
-    }
-
-    fn is_file(&self, path: &Path) -> bool {
-        path.is_file()
-    }
-
     fn read(&self, path: &Path) -> Result<Box<dyn std::io::Read>, FilesystemError> {
-        let file = fs::File::open(path).map_err(|source| FilesystemError::ReadError {
-            path: path.to_path_buf(),
-            source,
+        // Map the OS error onto the typed variants so callers (notably the
+        // searcher) can distinguish "missing" from "unreadable" without a
+        // racy `exists()` pre-check.
+        let file = fs::File::open(path).map_err(|source| match source.kind() {
+            ErrorKind::NotFound => FilesystemError::FileNotFound {
+                path: path.to_path_buf(),
+            },
+            ErrorKind::IsADirectory => FilesystemError::NotAFile {
+                path: path.to_path_buf(),
+            },
+            _ => FilesystemError::ReadError {
+                path: path.to_path_buf(),
+                source,
+            },
         })?;
         Ok(Box::new(file))
     }
+}
 
+impl WriteFs for PhysicalFS {
     fn writer(&self, path: &Path) -> Result<Box<dyn std::io::Write>, FilesystemError> {
         let file = fs::File::create(path).map_err(|source| FilesystemError::WriteError {
             path: path.to_path_buf(),

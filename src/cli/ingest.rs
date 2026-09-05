@@ -7,6 +7,8 @@ use std::{
 
 use clap::{Args, ValueEnum};
 
+use crate::types::IngestInput;
+
 #[derive(Debug, Clone)]
 enum Format {
     Jsonl,
@@ -23,7 +25,7 @@ enum FormatOptions {
 }
 
 impl FormatOptions {
-    fn parse<R: Read>(self, mut r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+    fn parse<R: Read>(self, mut r: R) -> impl Iterator<Item = Result<IngestInput, super::Error>> {
         if let Self::Format(format) = self {
             return EitherIter::Right(EitherIter::Left(format.parse(r)));
         }
@@ -112,16 +114,16 @@ where
 }
 
 impl Format {
-    fn parse_jsonl<R: Read>(r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+    fn parse_jsonl<R: Read>(r: R) -> impl Iterator<Item = Result<IngestInput, super::Error>> {
         BufReader::new(r).lines().map(|r| {
             let line = r?;
             Ok(serde_json::from_str(&line)?)
         })
     }
 
-    fn parse_json<R: Read>(mut r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+    fn parse_json<R: Read>(mut r: R) -> impl Iterator<Item = Result<IngestInput, super::Error>> {
         let mut content = String::new();
-        let res: Result<Vec<IngestRecord>, _> = r
+        let res: Result<Vec<IngestInput>, _> = r
             .read_to_string(&mut content)
             .map_err(Into::into)
             .map(move |_| content)
@@ -133,7 +135,7 @@ impl Format {
         }
     }
 
-    fn parse_csv<R: Read>(r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+    fn parse_csv<R: Read>(r: R) -> impl Iterator<Item = Result<IngestInput, super::Error>> {
         let mut rdr = csv::Reader::from_reader(r);
 
         #[derive(Debug, Clone)]
@@ -200,13 +202,13 @@ impl Format {
                 .ok_or(super::Error::CsvMissingHeaders)?;
             let r = r.map_err(super::Error::Csv)?;
 
-            Ok(IngestRecord {
-                path: PathBuf::from(
+            Ok(IngestInput {
+                file_path: PathBuf::from(
                     r.get(headers.file_path)
                         .ok_or(super::Error::CsvMissingFields("file path"))?
                         .to_string(),
                 ),
-                line: r
+                line_number: r
                     .get(headers.line_number)
                     .ok_or(super::Error::CsvMissingFields("line number"))?
                     .parse()
@@ -215,7 +217,7 @@ impl Format {
         })
     }
 
-    fn parse_grep<R: Read>(r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+    fn parse_grep<R: Read>(r: R) -> impl Iterator<Item = Result<IngestInput, super::Error>> {
         BufReader::new(r).lines().filter_map(|r| {
             r.map(|line| {
                 let line_no_split = line
@@ -237,9 +239,9 @@ impl Format {
 
                 let line_no: usize = nums.parse().ok()?;
                 let file = PathBuf::from_str(file).ok()?;
-                Some(IngestRecord {
-                    path: file,
-                    line: line_no,
+                Some(IngestInput {
+                    file_path: file,
+                    line_number: line_no,
                 })
             })
             .map_err(Into::into)
@@ -247,7 +249,7 @@ impl Format {
         })
     }
 
-    pub fn parse<R: Read>(self, r: R) -> impl Iterator<Item = Result<IngestRecord, super::Error>> {
+    pub fn parse<R: Read>(self, r: R) -> impl Iterator<Item = Result<IngestInput, super::Error>> {
         match self {
             Self::Json => EitherIter::Left(EitherIter::Left(Self::parse_json(r))),
             Self::Jsonl => EitherIter::Left(EitherIter::Right(Self::parse_jsonl(r))),
@@ -325,23 +327,8 @@ pub(super) struct IngestArgs {
     plain: bool,
 }
 
-#[derive(Debug, serde::Deserialize)]
-struct IngestRecord {
-    path: PathBuf,
-    line: usize,
-}
-
-impl From<IngestRecord> for crate::types::IngestInput {
-    fn from(value: IngestRecord) -> Self {
-        Self {
-            file_path: value.path,
-            line_number: value.line,
-        }
-    }
-}
-
 impl IngestArgs {
-    fn get_inputs(&self) -> Result<Vec<crate::types::IngestInput>, super::Error> {
+    fn get_inputs(&self) -> Result<Vec<IngestInput>, super::Error> {
         let mut stdin;
         let mut file;
 
@@ -356,11 +343,7 @@ impl IngestArgs {
             }
         };
 
-        self.format
-            .clone()
-            .parse(stream)
-            .map(|r| r.map(|i| i.into()))
-            .collect()
+        self.format.clone().parse(stream).collect()
     }
 
     pub fn handle(self) -> Result<(), super::Error> {

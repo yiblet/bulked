@@ -10,12 +10,10 @@ use std::path::PathBuf;
 ///
 /// This walker returns a predefined list of file paths.
 /// It's used in tests to control exactly which files are "walked".
-#[allow(dead_code)]
 pub(crate) struct SimpleWalker {
     files: Vec<PathBuf>,
 }
 
-#[allow(dead_code)]
 impl SimpleWalker {
     /// Create a new simple walker with the given file list
     pub fn new(files: Vec<PathBuf>) -> Self {

@@ -4,10 +4,10 @@
 //! defaults and production implementations (`PhysicalFS`, `GrepMatcher`, `IgnoreWalker`).
 
 use crate::filesystem::physical::PhysicalFS;
+use crate::matcher::MatcherError;
 use crate::matcher::regex::GrepMatcher;
-use crate::matcher::{Matcher, MatcherError};
 use crate::searcher::Searcher;
-use crate::types::{SearchError, SearchResult};
+use crate::types::{MatchResult, SearchError};
 use crate::walker::ignore_walker::IgnoreWalker;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -135,7 +135,7 @@ impl Execute {
         })
     }
 
-    pub fn search_iter(&self) -> impl Iterator<Item = Result<SearchResult, ExecuteError>> {
+    pub fn search_iter(&self) -> impl Iterator<Item = Result<Vec<MatchResult>, ExecuteError>> {
         self.searcher
             .search_all()
             .map(|result| result.map_err(|e| ExecuteError::SearchError { source: e }))
@@ -187,8 +187,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].matches.len(), 1);
-        assert_eq!(results[0].matches[0].line_number, 2);
-        assert_eq!(results[0].matches[0].line_content, "TARGET\n");
+        assert_eq!(results[0].len(), 1);
+        assert_eq!(results[0][0].line_number, 2);
+        assert_eq!(results[0][0].line_content, "TARGET\n");
     }
 }

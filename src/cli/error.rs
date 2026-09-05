@@ -1,12 +1,19 @@
+use miette::Diagnostic;
 use thiserror::Error;
 
 /// Root error type for CLI operations
-#[derive(Error, Debug)]
+///
+/// Only the `Format` variant carries miette diagnostic metadata (source spans,
+/// labels, help); it is marked transparent so the report rendered by `main.rs`
+/// shows the underlying `FormatError` diagnostic. All other variants render
+/// with their plain `Display` text.
+#[derive(Error, Debug, Diagnostic)]
 pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
+    #[diagnostic(transparent)]
     Format(#[from] crate::format::types::FormatError),
 
     #[error(transparent)]
@@ -31,16 +38,43 @@ pub enum Error {
     Ingest(#[from] crate::ingest::IngestError),
 
     #[error(transparent)]
-    Apply(#[from] crate::apply::ApplyError),
-
-    #[error("Failed to apply changes:\n{}", format_apply_errors(.0))]
-    ApplyMultiple(Vec<crate::apply::ApplyError>),
+    Apply(#[from] crate::apply::ApplyErrors),
 }
 
-fn format_apply_errors(errors: &[crate::apply::ApplyError]) -> String {
-    errors
-        .iter()
-        .map(|e| format!("  - {}", e))
-        .collect::<Vec<_>>()
-        .join("\n")
+#[cfg(test)]
+mod tests {
+    use super::Error;
+    use crate::format::types::Format;
+    use miette::Diagnostic;
+
+    #[test]
+    fn test_cli_error_exposes_format_diagnostic_labels() {
+        let input = "@f.txt:abc:1\nZ\n@@@\n";
+        let format_err = input
+            .parse::<Format>()
+            .expect_err("non-numeric line number must fail to parse");
+        let err = Error::from(format_err);
+
+        let labels: Vec<_> = err
+            .labels()
+            .expect("Format variant must expose the underlying labels")
+            .collect();
+        assert_eq!(labels.len(), 1, "expected exactly one label");
+        let expected_offset = input.find("abc").unwrap();
+        assert_eq!(labels[0].offset(), expected_offset);
+        assert_eq!(labels[0].len(), "abc".len());
+        assert_eq!(labels[0].label(), Some("Expected a number here"));
+
+        let code = err
+            .code()
+            .expect("Format variant must expose the underlying code");
+        assert_eq!(code.to_string(), "format::invalid_line_number");
+    }
+
+    #[test]
+    fn test_cli_error_non_format_variant_has_no_labels() {
+        let err = Error::CsvMissingHeaders;
+        assert!(err.labels().is_none());
+        assert!(err.code().is_none());
+    }
 }

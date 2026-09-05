@@ -1,5 +1,4 @@
 use crate::filesystem::memory::MemoryFS;
-use crate::matcher::Matcher; // Import the trait
 use crate::matcher::regex::GrepMatcher;
 use crate::searcher::Searcher;
 use crate::walker::simple::SimpleWalker;
@@ -44,7 +43,7 @@ fn test_full_stack_integration() {
         .search_all()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
+    let all_matches: Vec<_> = results.iter().flatten().collect();
 
     // Should find "fn " in both .rs files
     assert!(all_matches.len() >= 2, "Should find at least 2 matches");
@@ -121,7 +120,7 @@ fn test_bulked_search_with_context() {
         .search_all()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
+    let all_matches: Vec<_> = results.iter().flatten().collect();
 
     // Verify correct number of matches (2 matches in non-ignored files)
     assert_eq!(
@@ -141,21 +140,21 @@ fn test_bulked_search_with_context() {
 
     // Verify context before (should be exactly 20 lines: lines 5-24)
     assert_eq!(
-        match1.context_before.len(),
+        match1.context_before.split_inclusive('\n').count(),
         20,
         "Should have exactly 20 lines of context before"
     );
-    assert_eq!(match1.context_before[0].line_number, 5);
-    assert_eq!(match1.context_before[19].line_number, 24);
+    assert!(match1.context_before.starts_with("line 5\n"));
+    assert!(match1.context_before.ends_with("line 24\n"));
 
     // Verify context after (should be exactly 20 lines: lines 26-45)
     assert_eq!(
-        match1.context_after.len(),
+        match1.context_after.split_inclusive('\n').count(),
         20,
         "Should have exactly 20 lines of context after"
     );
-    assert_eq!(match1.context_after[0].line_number, 26);
-    assert_eq!(match1.context_after[19].line_number, 45);
+    assert!(match1.context_after.starts_with("line 26\n"));
+    assert!(match1.context_after.ends_with("line 45\n"));
 
     // Verify second match (file2.txt, line 3 near start - limited context)
     let match2 = all_matches
@@ -168,20 +167,16 @@ fn test_bulked_search_with_context() {
 
     // Verify context before (only 2 lines available: lines 1-2)
     assert_eq!(
-        match2.context_before.len(),
-        2,
+        match2.context_before, "line 1\nline 2\n",
         "Should have only 2 lines before (file boundary)"
     );
-    assert_eq!(match2.context_before[0].line_number, 1);
-    assert_eq!(match2.context_before[1].line_number, 2);
 
-    // Verify context after (only 1 line available: line 4)
+    // Verify context after (only 1 line available: line 4, the file's last
+    // line, which has no trailing newline)
     assert_eq!(
-        match2.context_after.len(),
-        1,
+        match2.context_after, "line 4",
         "Should have only 1 line after (file boundary)"
     );
-    assert_eq!(match2.context_after[0].line_number, 4);
 
     // Verify gitignored file was NOT searched
     assert!(
@@ -200,7 +195,6 @@ fn test_bulked_search_with_context() {
 #[test]
 fn test_search_format_apply_roundtrip_preserves_content() {
     use crate::apply::apply_format_to_fs;
-    use crate::filesystem::FileSystem;
     use crate::format::Format;
 
     // Create test file with specific content that has multiple lines
@@ -217,13 +211,13 @@ fn test_search_format_apply_roundtrip_preserves_content() {
         .search_all()
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).cloned().collect();
+    let all_matches: Vec<_> = results.iter().flatten().cloned().collect();
 
     // Convert matches to Format
-    let mut format = Format::from_matches(&all_matches);
+    let format = Format::from_matches(&all_matches);
 
     // Apply the format back to the file (no modifications)
-    apply_format_to_fs(&mut format, &fs).unwrap();
+    apply_format_to_fs(&format, &fs).unwrap();
 
     // Read the file back and verify it's unchanged
     let final_content = fs.read_to_string(&test_file).unwrap();

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::Args;
 
-use crate::apply::{apply_format_to_fs, verify_format_to_fs};
+use crate::apply::{apply_plan, verify_plan};
 use crate::filesystem;
 use crate::format::Format;
 
@@ -60,19 +60,28 @@ impl ApplyArgs {
             }
         };
 
-        // Parse the format
-        let mut format = input.parse::<Format>()?;
+        // Parse the format, then validate it into a plan: one group of sorted,
+        // non-overlapping chunks per file. Every structural error is reported here.
+        let format = input.parse::<Format>()?;
+        let plan = format.validate()?;
 
         let fs = filesystem::physical::PhysicalFS;
         if self.dry_run {
             // Phase 1 only: verify every file (reads + reconstructs, writes nothing).
-            verify_format_to_fs(&mut format, &fs).map_err(super::Error::ApplyMultiple)?;
-            format.file_chunks().into_iter().for_each(|(path, chunks)| {
-                println!("Would apply {} chunks to {}", chunks.len(), path.display());
-            });
+            verify_plan(&plan, &fs)?;
+            for edits in plan.files() {
+                println!(
+                    "Would apply {} chunks to {}",
+                    edits.chunks().len(),
+                    edits.path().display()
+                );
+            }
         } else {
-            apply_format_to_fs(&mut format, &fs).map_err(super::Error::ApplyMultiple)?;
-            println!("Successfully applied changes to {} chunks", format.len());
+            apply_plan(&plan, &fs)?;
+            println!(
+                "Successfully applied changes to {} chunks",
+                plan.chunk_count()
+            );
         }
 
         Ok(())

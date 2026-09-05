@@ -5,6 +5,7 @@
 //! file lists without depending on actual filesystem traversal.
 
 pub mod ignore_walker;
+#[cfg(test)]
 pub mod simple;
 
 use std::path::PathBuf;

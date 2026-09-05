@@ -9,9 +9,15 @@ use thiserror::Error;
 use crate::filesystem::FilesystemError;
 use crate::matcher::{MatchInfo, MatcherError};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A `(path, line)` location to ingest, as produced by another tool.
+///
+/// Deserializes directly from the `{"path": ..., "line": ...}` records that the
+/// `ingest` subcommand accepts, so no intermediate wire type is needed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct IngestInput {
+    #[serde(rename = "path")]
     pub file_path: PathBuf,
+    #[serde(rename = "line")]
     pub line_number: usize,
     // TODO: add support for context messages
     // pub message: String,
@@ -24,7 +30,8 @@ pub struct MatchResult {
     pub file_path: PathBuf,
     /// Line number (1-indexed) where the match occurred
     pub line_number: usize,
-    /// Content of the line containing the match
+    /// Content of the line containing the match, including its trailing `'\n'`
+    /// if the file had one
     pub line_content: String,
 
     /// Line match range (if any)
@@ -33,10 +40,13 @@ pub struct MatchResult {
 
     /// Byte offset of the match within the file
     pub byte_offset: usize,
-    /// Context lines before the match (added in Phase 2)
-    pub context_before: Vec<ContextLine>,
-    /// Context lines after the match (added in Phase 2)
-    pub context_after: Vec<ContextLine>,
+    /// Zero or more `'\n'`-terminated lines immediately preceding the match
+    /// line, in file order. Empty when there is no context before.
+    pub context_before: String,
+    /// Zero or more lines immediately following the match line, in file order.
+    /// Every line but the last is `'\n'`-terminated; the last is too unless it
+    /// is the file's final line and the file has no trailing newline.
+    pub context_after: String,
 }
 
 impl MatchResult {
@@ -48,40 +58,10 @@ impl MatchResult {
             line_match: match_info.line_match,
             line_content: match_info.line_content,
             byte_offset: match_info.byte_offset,
-            context_before: {
-                let lines: Vec<&str> = match_info.previous_lines.split_inclusive('\n').collect();
-                let count = lines.len();
-                lines
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, line)| ContextLine {
-                        line_number: match_info.line_num - count + idx,
-                        content: line.to_string(),
-                    })
-                    .collect()
-            },
-            context_after: {
-                match_info
-                    .next_lines
-                    .split_inclusive('\n')
-                    .enumerate()
-                    .map(|(idx, line)| ContextLine {
-                        line_number: match_info.line_num + idx + 1,
-                        content: line.to_string(),
-                    })
-                    .collect()
-            },
+            context_before: match_info.previous_lines,
+            context_after: match_info.next_lines,
         }
     }
-}
-
-/// A line of context around a match
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContextLine {
-    /// Line number (1-indexed)
-    pub line_number: usize,
-    /// Content of the line
-    pub content: String,
 }
 
 /// Errors that can occur during searching
@@ -102,60 +82,41 @@ pub enum SearchError {
     },
 }
 
-/// Result of a search operation
-#[derive(Debug, Clone)]
-pub struct SearchResult {
-    /// All matches found
-    pub matches: Vec<MatchResult>,
-}
-
-impl SearchResult {
-    /// Create a new empty search result
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            matches: Vec::new(),
-        }
-    }
-
-    /// Add a match to the result
-    #[cfg(test)]
-    pub fn add_match(&mut self, match_result: MatchResult) {
-        self.matches.push(match_result);
-    }
-}
-
-impl Default for SearchResult {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
-#[allow(clippy::similar_names)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_search_result_new() {
-        let result = SearchResult::new();
-        assert!(result.matches.is_empty());
+    fn test_from_match_info_copies_context_strings_through() {
+        let info = MatchInfo {
+            line_num: 10,
+            byte_offset: 42,
+            line_match: Some(0..5),
+            line_content: "MATCH\n".to_string(),
+            previous_lines: "l8\nl9\n".to_string(),
+            next_lines: "l11\n".to_string(),
+        };
+
+        let result = MatchResult::from_match_info(info, PathBuf::from("/test/file.txt"));
+
+        assert_eq!(result.file_path, PathBuf::from("/test/file.txt"));
+        assert_eq!(result.line_number, 10);
+        assert_eq!(result.byte_offset, 42);
+        assert_eq!(result.line_match, Some(0..5));
+        assert_eq!(result.line_content, "MATCH\n");
+        assert_eq!(result.context_before, "l8\nl9\n");
+        assert_eq!(result.context_after, "l11\n");
     }
 
     #[test]
-    fn test_search_result_add_match() {
-        let mut result = SearchResult::new();
-        let match_result = MatchResult {
-            file_path: PathBuf::from("/test/file.txt"),
-            line_number: 42,
-            line_content: "test line".to_string(),
-            line_match: None,
-            byte_offset: 100,
-            context_before: vec![],
-            context_after: vec![],
-        };
-        result.add_match(match_result.clone());
-        assert_eq!(result.matches.len(), 1);
-        assert_eq!(result.matches[0], match_result);
+    fn test_ingest_input_deserializes_from_path_and_line() {
+        let input: IngestInput = serde_json::from_str(r#"{"path":"src/a.rs","line":12}"#).unwrap();
+        assert_eq!(
+            input,
+            IngestInput {
+                file_path: PathBuf::from("src/a.rs"),
+                line_number: 12,
+            }
+        );
     }
 }

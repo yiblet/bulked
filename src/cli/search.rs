@@ -86,8 +86,8 @@ impl SearchArgs {
 
         let mut chunks = 0;
         for page in result.search_iter() {
-            let result = page?;
-            let format = Format::from_matches(&result.matches);
+            let matches = page?;
+            let format = Format::from_matches(&matches);
             chunks += format.len();
             write!(sink, "{}", format.display(self.plain, is_tty))?;
         }

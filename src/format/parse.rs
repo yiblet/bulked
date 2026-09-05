@@ -1,4 +1,5 @@
 use super::escaping::unescape_content;
+use super::range::LineRange;
 use super::types::{Chunk, Format, FormatError};
 use nom::combinator::opt;
 use nom::{
@@ -11,6 +12,7 @@ use nom::{
     multi::many0,
     sequence::preceded,
 };
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 fn space0(input: &str) -> ParseResult<'_, &str> {
@@ -90,7 +92,9 @@ impl ParserError {
                 }
             }
             ParserErrorKind::InvalidLineNumber { value, len } => {
-                let offset = source.len() - self.suffix_len;
+                // `suffix_len` is measured after the numeric segment was consumed,
+                // so back up by its length to point the label at the segment itself.
+                let offset = source.len() - self.suffix_len - len;
                 FormatError::InvalidLineNumber {
                     value,
                     src,
@@ -98,7 +102,7 @@ impl ParserError {
                 }
             }
             ParserErrorKind::InvalidNumLines { value, len } => {
-                let offset = source.len() - self.suffix_len;
+                let offset = source.len() - self.suffix_len - len;
                 FormatError::InvalidNumLines {
                     value,
                     src,
@@ -124,15 +128,21 @@ fn invalid_delimiter_error(input: &str) -> ParserError {
     ParserError::new(input, ParserErrorKind::InvalidDelimiter {})
 }
 
-fn parse_usize_segment<F>(
+/// Parse one numeric header segment (`<line>` or `<numlines>`) as a non-zero integer.
+///
+/// Zero is rejected exactly like a non-numeric value: `NonZeroUsize`'s `FromStr`
+/// fails on `"0"`, so both cases produce the same `Failure` whose span (computed by
+/// [`ParserError::into_format_error`] from `input`, the remainder *after* the
+/// segment, and `len`) points at the offending segment.
+fn parse_nonzero_segment<F>(
     segment: &str,
     input: &str,
     err_builder: F,
-) -> Result<usize, nom::Err<ParserError>>
+) -> Result<NonZeroUsize, nom::Err<ParserError>>
 where
     F: FnOnce(String, usize) -> ParserErrorKind,
 {
-    segment.parse::<usize>().map_err(|_| {
+    segment.parse::<NonZeroUsize>().map_err(|_| {
         nom::Err::Failure(ParserError::new(
             input,
             err_builder(segment.to_string(), segment.len()),
@@ -160,13 +170,15 @@ pub fn parse_format(src: &str) -> Result<Format, FormatError> {
             },
         })?;
 
-    if chunks.is_empty() {
+    // `Format::new` sorts by (path, range), so a parsed format is sorted by construction.
+    let format = Format::new(chunks);
+    if format.is_empty() {
         return Err(FormatError::NoChunks {
             src: src.to_string(),
         });
     }
 
-    Ok(Format(chunks))
+    Ok(format)
 }
 
 /// Returns a parser that consumes a chunk with context for better diagnostics.
@@ -174,25 +186,29 @@ fn chunk_parser(input: &str) -> ParseResult<'_, Chunk> {
     let chunk_start_suffix_len = input.len();
     let header_len = input.split_inclusive('\n').next().map_or(0, str::len);
 
-    let (input, (path, line_number, numlines)) = start_delimiter(input)?;
+    let (input, (path, range)) = start_delimiter(input)?;
 
     let (input, mut content) = chunk_content(chunk_start_suffix_len, header_len)(input)?;
 
-    let (input, no_newline_eol) = parse_end_delimiter_nom(input)?;
-    if no_newline_eol && content.ends_with('\n') {
+    let (input, dash_terminated) = parse_end_delimiter_nom(input)?;
+    if dash_terminated && content.ends_with('\n') {
         content.pop();
     }
 
     let unescaped_content = unescape_content(&content);
+    // `@@@-` is not stored on the chunk: the trailing newline was stripped above, so
+    // the serializer derives the terminator from `content.ends_with('\n')`.
     Ok((
         input,
-        Chunk::new(path, line_number, numlines, unescaped_content.to_string())
-            .with_no_newline_eol(no_newline_eol),
+        Chunk::new(path, range, unescaped_content.to_string()),
     ))
 }
 
 /// Parser for the start delimiter: @path:line:numlines
-fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, usize, usize)> {
+///
+/// Both numbers must be non-zero; `@f:0:1` and `@f:1:0` are failures whose spans
+/// label the zero.
+fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, LineRange)> {
     // Use closures to lazily construct errors with the correct suffix length
     let invalid_failure = || nom::Err::Failure(invalid_delimiter_error(input));
     let invalid_error = || nom::Err::Error(invalid_delimiter_error(input));
@@ -207,7 +223,7 @@ fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, usize, usize)> {
     if !input.starts_with(':') {
         return Err(invalid_failure());
     }
-    let line_number = parse_usize_segment(line_str, input, |value, len| {
+    let line_number = parse_nonzero_segment(line_str, input, |value, len| {
         ParserErrorKind::InvalidLineNumber { value, len }
     })?;
 
@@ -215,14 +231,20 @@ fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, usize, usize)> {
 
     let (input, numlines_str) = take_till1(|c| c == '\n' || c == '\r')(input)
         .map_err(|_: nom::Err<ParserError>| invalid_failure())?;
-    let numlines = parse_usize_segment(numlines_str, input, |value, len| {
+    let numlines = parse_nonzero_segment(numlines_str, input, |value, len| {
         ParserErrorKind::InvalidNumLines { value, len }
     })?;
 
     let (input, _) = space0(input)?;
     let (input, _) = newline(input)?;
 
-    Ok((input, (PathBuf::from(path_str), line_number, numlines)))
+    Ok((
+        input,
+        (
+            PathBuf::from(path_str),
+            LineRange::new(line_number, numlines),
+        ),
+    ))
 }
 
 /// Parser factory for chunk content until the @@@ end delimiter.
@@ -271,12 +293,12 @@ fn parse_end_delimiter_nom(input: &str) -> ParseResult<'_, bool> {
     let (input, _) = tag("@@@").parse(input)?;
 
     let (input, opt_tag) = opt(tag("-")).parse(input)?;
-    let is_no_newline_eol = opt_tag.is_some();
+    let dash_terminated = opt_tag.is_some();
 
     // Allow optional text after @@@ until end of line
     let (input, _) = opt(not_newline).parse(input)?;
     let (input, _) = alt((recognize(newline), recognize(nom::combinator::eof))).parse(input)?;
-    Ok((input, is_no_newline_eol))
+    Ok((input, dash_terminated))
 }
 
 /// Skip whitespace and comment lines
@@ -298,21 +320,26 @@ fn skip_whitespace_and_comments(input: &str) -> ParseResult<'_, ()> {
 mod tests {
     use crate::format::parse::start_delimiter;
 
-    use super::super::types::{Format, FormatError};
+    use super::super::types::{Chunk, Format, FormatError};
     use std::path::PathBuf;
     use std::str::FromStr;
+
+    /// The chunks of `f` in sorted order, indexable for assertions.
+    fn chunks(f: &Format) -> Vec<&Chunk> {
+        f.iter().collect()
+    }
 
     #[test]
     fn test_format_from_str_single_chunk() {
         let input = "@src/main.rs:10:2\nfn main() {\n    println!(\"Hello\");\n@@@\n";
 
         let format = Format::from_str(input).unwrap();
-        assert_eq!(format.0.len(), 1);
-        assert_eq!(format.0[0].path, PathBuf::from("src/main.rs"));
-        assert_eq!(format.0[0].start_line, 10);
-        assert_eq!(format.0[0].num_lines, 2);
+        assert_eq!(format.len(), 1);
+        assert_eq!(chunks(&format)[0].path(), PathBuf::from("src/main.rs"));
+        assert_eq!(chunks(&format)[0].start_line(), 10);
+        assert_eq!(chunks(&format)[0].num_lines(), 2);
         assert_eq!(
-            format.0[0].content,
+            chunks(&format)[0].content(),
             "fn main() {\n    println!(\"Hello\");\n"
         );
     }
@@ -329,15 +356,15 @@ line 10
 ";
 
         let format = Format::from_str(input).unwrap();
-        assert_eq!(format.0.len(), 2);
-        assert_eq!(format.0[0].path, PathBuf::from("test.txt"));
-        assert_eq!(format.0[0].start_line, 5);
-        assert_eq!(format.0[0].num_lines, 1);
-        assert_eq!(format.0[0].content, "line 5\n");
-        assert_eq!(format.0[1].path, PathBuf::from("test.txt"));
-        assert_eq!(format.0[1].start_line, 10);
-        assert_eq!(format.0[1].num_lines, 1);
-        assert_eq!(format.0[1].content, "line 10\n");
+        assert_eq!(format.len(), 2);
+        assert_eq!(chunks(&format)[0].path(), PathBuf::from("test.txt"));
+        assert_eq!(chunks(&format)[0].start_line(), 5);
+        assert_eq!(chunks(&format)[0].num_lines(), 1);
+        assert_eq!(chunks(&format)[0].content(), "line 5\n");
+        assert_eq!(chunks(&format)[1].path(), PathBuf::from("test.txt"));
+        assert_eq!(chunks(&format)[1].start_line(), 10);
+        assert_eq!(chunks(&format)[1].num_lines(), 1);
+        assert_eq!(chunks(&format)[1].content(), "line 10\n");
     }
 
     #[test]
@@ -356,9 +383,9 @@ more content
 ";
 
         let format = Format::from_str(input).unwrap();
-        assert_eq!(format.0.len(), 2);
-        assert_eq!(format.0[0].content, "content\n");
-        assert_eq!(format.0[1].content, "more content\n");
+        assert_eq!(format.len(), 2);
+        assert_eq!(chunks(&format)[0].content(), "content\n");
+        assert_eq!(chunks(&format)[1].content(), "more content\n");
     }
 
     #[test]
@@ -366,7 +393,7 @@ more content
         let input = "@test.txt:1:1\nuser\\@domain.com\\\\path\n@@@\n";
 
         let format = Format::from_str(input).unwrap();
-        assert_eq!(format.0[0].content, "user@domain.com\\path\n");
+        assert_eq!(chunks(&format)[0].content(), "user@domain.com\\path\n");
     }
 
     #[test]
@@ -405,8 +432,10 @@ more content
         let result = Format::from_str(input);
         assert!(result.is_err());
         match result.unwrap_err() {
-            FormatError::InvalidLineNumber { value, .. } => {
+            FormatError::InvalidLineNumber { value, span, .. } => {
                 assert_eq!(value, "not_a_number");
+                assert_eq!(span.offset(), input.find("not_a_number").unwrap());
+                assert_eq!(span.len(), "not_a_number".len());
             }
             _ => panic!("Expected InvalidLineNumber error"),
         }
@@ -418,10 +447,42 @@ more content
         let result = Format::from_str(input);
         assert!(result.is_err());
         match result.unwrap_err() {
-            FormatError::InvalidNumLines { value, .. } => {
+            FormatError::InvalidNumLines { value, span, .. } => {
                 assert_eq!(value, "invalid");
+                assert_eq!(span.offset(), input.find("invalid").unwrap());
+                assert_eq!(span.len(), "invalid".len());
             }
             _ => panic!("Expected InvalidNumLines error"),
+        }
+    }
+
+    #[test]
+    fn test_zero_line_number_is_parse_error_with_span() {
+        // Line numbers are 1-indexed: a zero line is a parse error whose span labels
+        // the "0" (offset 3 in "@f:0:1"), the same shape as a non-numeric value.
+        let input = "@f:0:1\nx\n@@@\n";
+        match Format::from_str(input).unwrap_err() {
+            FormatError::InvalidLineNumber { value, span, .. } => {
+                assert_eq!(value, "0");
+                assert_eq!(span.offset(), 3);
+                assert_eq!(span.len(), 1);
+            }
+            other => panic!("Expected InvalidLineNumber error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_zero_numlines_is_parse_error_with_span() {
+        // A chunk must cover at least one line: zero numlines is a parse error whose
+        // span labels the "0" (offset 5 in "@f:1:0").
+        let input = "@f:1:0\nx\n@@@\n";
+        match Format::from_str(input).unwrap_err() {
+            FormatError::InvalidNumLines { value, span, .. } => {
+                assert_eq!(value, "0");
+                assert_eq!(span.offset(), 5);
+                assert_eq!(span.len(), 1);
+            }
+            other => panic!("Expected InvalidNumLines error, got {other:?}"),
         }
     }
 
@@ -458,8 +519,8 @@ more content
         let input = "@test.txt:1:1\ncontent\n@@@ this is a comment\n";
 
         let format = Format::from_str(input).unwrap();
-        assert_eq!(format.0.len(), 1);
-        assert_eq!(format.0[0].content, "content\n");
+        assert_eq!(format.len(), 1);
+        assert_eq!(chunks(&format)[0].content(), "content\n");
     }
 
     #[test]
@@ -474,9 +535,9 @@ line 10
 ";
 
         let format = Format::from_str(input).unwrap();
-        assert_eq!(format.0.len(), 2);
-        assert_eq!(format.0[0].content, "line 5\n");
-        assert_eq!(format.0[1].content, "line 10\n");
+        assert_eq!(format.len(), 2);
+        assert_eq!(chunks(&format)[0].content(), "line 5\n");
+        assert_eq!(chunks(&format)[1].content(), "line 10\n");
     }
 
     #[test]
@@ -485,12 +546,12 @@ line 10
         let input = "@test.txt:1:2\r\nline1\r\nline2\r\n@@@\r\n";
 
         let format = Format::from_str(input).unwrap();
-        assert_eq!(format.0.len(), 1);
-        assert_eq!(format.0[0].path, PathBuf::from("test.txt"));
-        assert_eq!(format.0[0].start_line, 1);
-        assert_eq!(format.0[0].num_lines, 2);
+        assert_eq!(format.len(), 1);
+        assert_eq!(chunks(&format)[0].path(), PathBuf::from("test.txt"));
+        assert_eq!(chunks(&format)[0].start_line(), 1);
+        assert_eq!(chunks(&format)[0].num_lines(), 2);
         // The \r should be preserved as part of the line content
-        assert_eq!(format.0[0].content, "line1\r\nline2\r\n");
+        assert_eq!(chunks(&format)[0].content(), "line1\r\nline2\r\n");
     }
 
     #[test]
@@ -508,8 +569,8 @@ line 10
         let input = "@test.txt:1:3\r\nline1\r\nline2\nline3\r\n@@@\n";
 
         let format = Format::from_str(input).unwrap();
-        assert_eq!(format.0.len(), 1);
+        assert_eq!(format.len(), 1);
         // Each line should preserve its original line ending
-        assert_eq!(format.0[0].content, "line1\r\nline2\nline3\r\n");
+        assert_eq!(chunks(&format)[0].content(), "line1\r\nline2\nline3\r\n");
     }
 }

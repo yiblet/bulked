@@ -1,22 +1,22 @@
 //! Core search logic - functional core with no I/O dependencies
 //!
 //! This module provides the Searcher, which orchestrates the search operation
-//! using abstract dependencies (`FileSystem`, Matcher, Walker traits). This
+//! using abstract dependencies (`ReadFs`, Matcher, Walker traits). This
 //! implements the functional core of the hexagonal architecture.
 
-use crate::filesystem::FileSystem;
-use crate::matcher::{MatchInfo, Matcher};
-use crate::types::{MatchResult, SearchError, SearchResult};
+use crate::filesystem::{FilesystemError, ReadFs};
+use crate::matcher::{MatchInfo, Matcher, Source};
+use crate::types::{MatchResult, SearchError};
 use crate::walker::Walker;
 use std::path::Path;
 
 /// Core search orchestrator
 ///
-/// This struct is generic over the `FileSystem`, Matcher, and Walker traits.
+/// This struct is generic over the `ReadFs`, Matcher, and Walker traits.
 /// This allows it to work with any combination of implementations (real or test).
 pub struct Searcher<FS, M, W>
 where
-    FS: FileSystem,
+    FS: ReadFs,
     M: Matcher,
     W: Walker,
 {
@@ -27,7 +27,7 @@ where
 
 impl<FS, M, W> Searcher<FS, M, W>
 where
-    FS: FileSystem,
+    FS: ReadFs,
     M: Matcher,
     W: Walker,
 {
@@ -45,50 +45,30 @@ where
     /// Returns Ok with matches if successful, or Err with a `SearchError` if the file
     /// couldn't be searched.
     fn search_file(&self, path: &Path) -> Result<Vec<MatchResult>, SearchError> {
-        use crate::filesystem::FilesystemError;
-
-        // Check if file exists
-        if !self.fs.exists(path) {
-            return Err(SearchError::FileReadError {
-                source: FilesystemError::FileNotFound {
-                    path: path.to_path_buf(),
-                },
-            });
-        }
-
-        // Check if it's actually a file
-        if !self.fs.is_file(path) {
-            return Err(SearchError::FileReadError {
-                source: FilesystemError::NotAFile {
-                    path: path.to_path_buf(),
-                },
-            });
-        }
-
         // Note: Binary file detection is handled by GrepMatcher via BinaryDetection::quit
         // which automatically stops searching when encountering null bytes
 
-        let match_infos = match self
-            .fs
-            .as_real_path(path)
-            .and_then(|path| Some(self.matcher.search_path()?(&path)))
-        {
+        // Prefer searching the real path in place when the filesystem exposes
+        // one; otherwise read the file through the `ReadFs` port and hand the
+        // matcher its contents. Either way it is a single `Matcher::search`.
+        let match_infos = match self.fs.as_real_path(path) {
+            Some(real) => self.matcher.search(Source::Path(&real)),
             None => {
-                // Read file contents
-                let content = self.fs.read_to_string(path).map_err(|source| {
+                // Read file contents. There is no `exists`/`is_file` pre-check:
+                // `ReadFs::read` returns the typed `FileNotFound`/`NotAFile`/
+                // `ReadError` directly, which avoids a check-then-use race.
+                let content = self.read_to_string(path).map_err(|source| {
                     tracing::warn!("Failed to read {}: {}", path.display(), source);
                     source
                 })?;
 
-                // Search for matches
-                self.matcher.search_in_content(&content)
+                self.matcher.search(Source::Content(&content))
             }
-
-            Some(matches) => matches.map_err(|source| {
-                tracing::warn!("Search error: {}", source);
-                source
-            })?,
-        };
+        }
+        .map_err(|source| {
+            tracing::warn!("Search error in {}: {}", path.display(), source);
+            source
+        })?;
 
         // Convert to MatchResult
         let matches: Vec<MatchResult> = match_infos
@@ -99,20 +79,35 @@ where
         Ok(matches)
     }
 
-    /// Search all files and return results
+    /// Read the whole file at `path` into a `String` through the `ReadFs` port.
     ///
-    /// This is the main entry point for searching. It walks all files,
-    /// searches each one, and collects results and errors.
+    /// Invalid UTF-8 surfaces as a `ReadError` whose source has kind `InvalidData`.
+    fn read_to_string(&self, path: &Path) -> Result<String, FilesystemError> {
+        use std::io::Read;
+
+        let mut content = String::new();
+        self.fs
+            .read(path)?
+            .read_to_string(&mut content)
+            .map_err(|source| FilesystemError::ReadError {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        Ok(content)
+    }
+
+    /// Search all files, yielding one item per file that matched or failed
     ///
-    /// Returns `Ok(SearchResult)` with all matches if successful, or `Err(SearchError)`
-    /// if any errors occurred. If multiple files had errors, returns `SearchError::Multiple`.
-    pub fn search_all(&self) -> impl Iterator<Item = Result<SearchResult, SearchError>> + '_ {
+    /// This is the main entry point for searching. It walks all files and
+    /// searches each one. Files with no matches are skipped; every other file
+    /// yields `Ok(matches)` (non-empty, in file order) or `Err(SearchError)`.
+    pub fn search_all(&self) -> impl Iterator<Item = Result<Vec<MatchResult>, SearchError>> + '_ {
         self.walker
             .files()
             .filter_map(move |path| match self.search_file(&path) {
                 Err(err) => Some(Err(err)),
                 Ok(matches) if matches.is_empty() => None,
-                Ok(matches) => Some(Ok(SearchResult { matches })),
+                Ok(matches) => Some(Ok(matches)),
             })
     }
 }
@@ -157,9 +152,9 @@ mod tests {
         let result = results[0].as_ref().unwrap();
 
         // Assertions
-        assert_eq!(result.matches.len(), 1);
+        assert_eq!(result.len(), 1);
 
-        let match_result = &result.matches[0];
+        let match_result = &result[0];
         assert_eq!(match_result.file_path, test_path);
         assert_eq!(match_result.line_number, 2);
         assert_eq!(match_result.line_content, "TARGET line\n");
@@ -191,7 +186,7 @@ mod tests {
             .search_all()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
+        let all_matches: Vec<_> = results.iter().flatten().collect();
 
         // Should find "hello" in both files
         assert_eq!(all_matches.len(), 3); // main.rs line 2, lib.rs lines 1 and 2
@@ -223,7 +218,7 @@ mod tests {
             .search_all()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        let all_matches: Vec<_> = results.iter().flat_map(|r| &r.matches).collect();
+        let all_matches: Vec<_> = results.iter().flatten().collect();
 
         // Should find match in text file only
         assert_eq!(all_matches.len(), 1);
@@ -252,6 +247,28 @@ mod tests {
                 // Expected error
             }
             _ => panic!("Expected FileReadError"),
+        }
+    }
+
+    /// A missing file must surface as the typed `FileNotFound` error coming out
+    /// of `ReadFs::read`, now that the searcher no longer pre-checks `exists`.
+    #[test]
+    fn test_search_missing_file_yields_file_not_found() {
+        let fs = MemoryFS::new();
+        let missing = PathBuf::from("/does/not/exist.txt");
+
+        let matcher = GrepMatcher::compile("test").unwrap();
+        let walker = SimpleWalker::new(vec![missing.clone()]);
+
+        let searcher = Searcher::new(fs, matcher, walker);
+        let results: Vec<_> = searcher.search_all().collect();
+
+        assert_eq!(results.len(), 1);
+        match &results[0] {
+            Err(SearchError::FileReadError {
+                source: FilesystemError::FileNotFound { path },
+            }) => assert_eq!(path, &missing),
+            other => panic!("expected FileReadError(FileNotFound), got {other:?}"),
         }
     }
 
@@ -292,26 +309,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].matches.len(), 1);
-        let m = &results[0].matches[0];
+        assert_eq!(results[0].len(), 1);
+        let m = &results[0][0];
 
         // Verify match details
         assert_eq!(m.file_path, file);
         assert_eq!(m.line_number, 3);
         assert!(m.line_content.contains("MATCH"));
 
-        // Verify context before (lines 1-2)
-        assert_eq!(m.context_before.len(), 2);
-        assert_eq!(m.context_before[0].line_number, 1);
-        assert_eq!(m.context_before[0].content, "line 1\n");
-        assert_eq!(m.context_before[1].line_number, 2);
-        assert_eq!(m.context_before[1].content, "line 2\n");
+        // Verify context before (lines 1-2), as newline-terminated lines
+        assert_eq!(m.context_before, "line 1\nline 2\n");
 
         // Verify context after (lines 4-5)
-        assert_eq!(m.context_after.len(), 2);
-        assert_eq!(m.context_after[0].line_number, 4);
-        assert_eq!(m.context_after[0].content, "line 4\n");
-        assert_eq!(m.context_after[1].line_number, 5);
-        assert_eq!(m.context_after[1].content, "line 5\n");
+        assert_eq!(m.context_after, "line 4\nline 5\n");
     }
 }

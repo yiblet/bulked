@@ -50,12 +50,12 @@ All three converge on the same `Format`/`Chunk` types:
 
 - **search** → `Execute` walks + matches files → `MatchResult`s → `Format::from_matches` builds `Chunk`s (match line + context) → printed as the format.
 - **ingest** (`src/ingest.rs`) → reads `(path, line)` pairs from stdin/file in **jsonl / json / csv / grep** formats (auto-detected in `cli/ingest.rs` by sniffing the first bytes), reads context lines around each line, → same `MatchResult` → `Format` output. This lets you pipe arbitrary tool output (e.g. `rg --json`, compiler errors) into the editable format.
-- **apply** (`src/apply.rs`) → parses an (edited) `Format` → `apply_format` validates chunks (same path, sorted, non-overlapping, in-bounds, non-zero length — errors are **accumulated**, not fail-fast) → reconstructs each file by interleaving unmodified `Content` segments with modified `Chunk` segments → writes via `FileSystem`. `--dry-run` reports what would change without writing.
+- **apply** (`src/apply.rs`) → parses an (edited) `Format` → `Format::validate` groups chunks by path and rejects overlaps (errors are **accumulated** across all files, not fail-fast), yielding a `Plan` of per-file `FileEdits` → `verify_plan` streams every file to a sink to catch out-of-bounds chunks → `apply_plan` reconstructs each file by streaming the original and interleaving chunk content, staged via `StagingFs` and committed atomically. `--dry-run` stops after `verify_plan` and reports what would change without writing.
 
 `Format::file_chunks()` groups sorted chunks by path so apply can process one file at a time. `Format::merge()` (currently `#[allow(dead_code)]`) combines adjacent/overlapping chunks.
 
 ### Error handling conventions
 
 - Library modules define their own `thiserror` enum (`SearchError`, `MatcherError`, `FilesystemError`, `ApplyError`, `IngestError`, `FormatError`).
-- `cli::Error` (`cli/error.rs`) is the root type that `#[from]`-converts all of them; `main.rs` prints it to **stdout** (logs go to stderr via `tracing`) and exits 1.
+- `cli::Error` (`cli/error.rs`) is the root type that `#[from]`-converts all of them and derives `miette::Diagnostic` (the `Format` variant is `#[diagnostic(transparent)]`); `main.rs` renders it as a `miette::Report` to **stderr** (colored only when stderr is a terminal; logs also go to stderr via `tracing`; stdout is reserved for the chunk format and status output) and exits 1.
 - `FormatError` carries `miette` source spans for human-friendly parse diagnostics — preserve the span/offset bookkeeping when touching `format/parse.rs`.
