@@ -227,3 +227,101 @@ fn test_search_format_apply_roundtrip_preserves_content() {
         original_content, final_content
     );
 }
+
+/// The `apply` CLI handler, end to end, against an in-memory filesystem.
+///
+/// Exercises the injected `run` core: the chunk format comes from `input`, the
+/// file is read and rewritten through `MemoryFS`, and the status line lands in
+/// `out`. Nothing touches the real filesystem, stdin, or stdout.
+#[test]
+fn test_apply_handler_end_to_end_on_memory_fs() {
+    use crate::cli::ApplyArgs;
+
+    let fs = MemoryFS::new();
+    let file = PathBuf::from("/f.txt");
+    fs.add_file(&file, "a\nb\nc\n").unwrap();
+
+    let mut input = "@/f.txt:2:1\nB\n@@@\n".as_bytes();
+    let mut out: Vec<u8> = Vec::new();
+
+    ApplyArgs {
+        input: None,
+        dry_run: false,
+    }
+    .run(&fs, &mut input, &mut out)
+    .expect("apply should succeed on a valid chunk");
+
+    assert_eq!(fs.read_to_string(&file).unwrap(), "a\nB\nc\n");
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains("Successfully applied changes to 1 chunks"),
+        "unexpected status output: {out:?}"
+    );
+}
+
+/// `apply --dry-run` through the handler verifies but writes nothing.
+#[test]
+fn test_apply_dry_run_writes_nothing_on_memory_fs() {
+    use crate::cli::ApplyArgs;
+
+    let fs = MemoryFS::new();
+    let file = PathBuf::from("/f.txt");
+    fs.add_file(&file, "a\nb\nc\n").unwrap();
+
+    let mut input = "@/f.txt:2:1\nB\n@@@\n".as_bytes();
+    let mut out: Vec<u8> = Vec::new();
+
+    ApplyArgs {
+        input: None,
+        dry_run: true,
+    }
+    .run(&fs, &mut input, &mut out)
+    .expect("dry-run should succeed on a valid chunk");
+
+    assert_eq!(
+        fs.read_to_string(&file).unwrap(),
+        "a\nb\nc\n",
+        "dry-run must not modify the file"
+    );
+    assert_eq!(fs.file_count(), 1, "dry-run must not leave staged files");
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains("Would apply 1 chunks to /f.txt"),
+        "unexpected status output: {out:?}"
+    );
+}
+
+/// The `ingest` CLI handler, end to end, against an in-memory filesystem:
+/// grep-format locations from `input`, context read through `MemoryFS`, and
+/// the chunk format written to `out`.
+#[test]
+fn test_ingest_handler_end_to_end_on_memory_fs() {
+    use crate::cli::IngestArgs;
+
+    let fs = MemoryFS::new();
+    fs.add_file(&PathBuf::from("/f.txt"), "a\nb\nc\n").unwrap();
+
+    let mut input = "/f.txt:2\n".as_bytes();
+    let mut out: Vec<u8> = Vec::new();
+    let mut err: Vec<u8> = Vec::new();
+
+    IngestArgs {
+        path: None,
+        format: Default::default(),
+        output: None,
+        context: 1,
+        plain: false,
+    }
+    .run(&fs, &mut input, &mut out, &mut err, false)
+    .expect("ingest should succeed on a grep-format location");
+
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "@/f.txt:1:3\na\nb\nc\n@@@\n"
+    );
+    assert!(
+        err.is_empty(),
+        "no status line expected without --output: {:?}",
+        String::from_utf8_lossy(&err)
+    );
+}

@@ -13,23 +13,14 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     #[error(transparent)]
+    Filesystem(#[from] crate::filesystem::FilesystemError),
+
+    #[error(transparent)]
     #[diagnostic(transparent)]
     Format(#[from] crate::format::types::FormatError),
 
     #[error(transparent)]
-    Json(#[from] serde_json::Error),
-
-    #[error(transparent)]
-    Csv(#[from] csv::Error),
-
-    #[error("csv does not contain the right headers. It must be at least path,line_number")]
-    CsvMissingHeaders,
-
-    #[error("csv contains missing fields for {0}")]
-    CsvMissingFields(&'static str),
-
-    #[error("csv coould not parse {0}")]
-    CsvCouldNotParse(&'static str),
+    IngestParse(#[from] super::ingest::IngestParseError),
 
     #[error(transparent)]
     Execute(#[from] crate::execute::ExecuteError),
@@ -44,6 +35,7 @@ pub enum Error {
 #[cfg(test)]
 mod tests {
     use super::Error;
+    use crate::cli::ingest::IngestParseError;
     use crate::format::types::Format;
     use miette::Diagnostic;
 
@@ -73,8 +65,12 @@ mod tests {
 
     #[test]
     fn test_cli_error_non_format_variant_has_no_labels() {
-        let err = Error::CsvMissingHeaders;
+        let err = Error::from(IngestParseError::MissingHeaders);
         assert!(err.labels().is_none());
         assert!(err.code().is_none());
+        assert_eq!(
+            err.to_string(),
+            "csv does not contain the right headers. It must be at least path,line_number"
+        );
     }
 }

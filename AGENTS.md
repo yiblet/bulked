@@ -11,21 +11,25 @@
 
 ## Architecture
 
-This is a grep-like tool built on a **hexagonal (ports & adapters) architecture**. The functional core has no I/O; all I/O is injected through traits, which is the primary test seam.
+This is a grep-like tool built on a **hexagonal (ports & adapters) architecture**. The functional core has no I/O; all I/O is injected through traits, which is the primary test seam. Test doubles are compiled only under `#[cfg(test)]` and never ship in the binary.
 
-### The three ports (traits) and their adapters
+### The ports (traits) and their adapters
 
-`Searcher<FS, M, W>` (`src/searcher.rs`) is the generic functional core. It depends only on three traits:
+`Searcher<FS, M, W>` (`src/searcher.rs`) is the generic functional core. It depends only on these traits:
 
 | Trait (`port`) | Production adapter | Test double |
 |---|---|---|
-| `FileSystem` (`filesystem/mod.rs`) | `PhysicalFS` (real `std::fs`) | `MemoryFS` (in-memory) |
+| `ReadFs` / `WriteFs` (`filesystem/mod.rs`) | `PhysicalFS` (real `std::fs`) | `MemoryFS` (in-memory, `#[cfg(test)]`) |
 | `Matcher` (`matcher/mod.rs`) | `GrepMatcher` (wraps the `grep` crate) | `StubMatcher` (canned matches) |
 | `Walker` (`walker/mod.rs`) | `IgnoreWalker` (`.gitignore`-aware via `ignore` crate) | `SimpleWalker` (fixed path list) |
 
-`src/execute.rs` is the composition root that wires the three production adapters into a `Searcher` for the CLI. Tests instead construct a `Searcher` directly with test doubles. This is why most tests never touch the real filesystem.
+The filesystem port is split by direction. `ReadFs` (`read` → streaming `Box<dyn Read>`, `as_real_path`) is all that search, ingest, and apply's verification phase need; `WriteFs` (`writer` → streaming `Box<dyn Write>`, `rename`, `remove_file`) is what apply's write phase needs on top. `FileSystem: ReadFs + WriteFs` has no methods of its own and is implemented by a blanket impl for every `ReadFs + WriteFs` type, so `&dyn FileSystem` names "both sides" and upcasts to `&dyn ReadFs` where only reads are needed. Take the narrowest trait a function actually uses.
 
-`FileSystem::as_real_path` is a performance escape hatch: when it returns `Some`, the matcher can search the path directly (`Matcher::search_path`, e.g. memory-mapped grep) instead of reading the whole file into a `String`. `MemoryFS` returns `None`, forcing the read-into-string path.
+`StagingFs` (`filesystem/staging.rs`) is a journaled, transactional `FileSystem` decorator: reads delegate to the inner FS (so staged writes are never visible through `read`); every write-side call streams into a temp file **beside** its target (same device → atomic `rename(2)`) or appends a `Rename`/`Remove` entry to an in-memory journal. `commit` replays the journal in order; dropping without commit deletes the temps and discards the journal, leaving the inner FS untouched. This is how apply is all-or-nothing.
+
+`ReadFs::as_real_path` is a performance escape hatch: when it returns `Some`, the matcher is given `Source::Path` and can search the file in place (memory-mapped grep) instead of reading it into a `String` (`Source::Content`). `MemoryFS` returns `None`, forcing the read-into-string path. `Matcher` has a single method, `search(&self, src: Source<'_>) -> Result<Vec<MatchInfo>, MatcherError>`; `GrepMatcher::compile` is an inherent constructor, not part of the trait.
+
+`src/execute.rs` is the composition root that wires the three production adapters into a `Searcher` for the `search` subcommand. Tests instead construct a `Searcher` directly with test doubles, which is why most tests never touch the real filesystem.
 
 ### The chunk format is the spine of the whole tool
 
@@ -37,25 +41,25 @@ The custom text format is the data-interchange contract between the three subcom
 @@@
 ```
 
-- `@@@-` instead of `@@@` marks "no trailing newline at EOF".
+- `@@@-` instead of `@@@` marks "no trailing newline at EOF". It is **derived** from the content on output (`Chunk::ends_with_newline`), not stored as a flag.
 - Inside content, `@` and `\` are escaped as `\@` and `\\` (`format/escaping.rs`).
 - Text outside delimiters is treated as comments and ignored on parse.
 - The format is round-trippable: serialize → hand-edit → parse must preserve content.
 
-`Chunk` (`format/types.rs`) is the central data structure. `Format` is a `Vec<Chunk>` plus serialization (`Display`) and parsing (`FromStr` → nom parser in `format/parse.rs`, which produces rich `miette` diagnostics with source spans).
+`LineRange` (`format/range.rs`) owns all line-range arithmetic: a 1-indexed `start` and a `len`, both `NonZeroUsize`, with `end_inclusive`/`end_exclusive`/`overlaps`. No `usize` line arithmetic should live outside it; zero line numbers and zero lengths are unrepresentable.
+
+`Chunk` (`format/types.rs`) is the central data structure: private `path`, `range: LineRange`, `content`, and optional `match_range`, reached through accessors (`path()`, `range()`, `start_line()`, `num_lines()`, `content()`). `Format` wraps a **private, always-sorted** `Vec<Chunk>` (sorted by `(path, range)` on construction; `iter()`, `len()`, `file_chunks()` group by path). It serializes via `Display`/`display(plain, highlight)` and parses via `FromStr` → the nom parser in `format/parse.rs`, which produces rich `miette` diagnostics with source spans (a zero line number or length is a parse error with a span).
 
 ### Data flow (the three subcommands in `src/cli/`)
 
-All three converge on the same `Format`/`Chunk` types:
+All three converge on the same `Format`/`Chunk` types. Each subcommand's `*Args` struct has a `run(self, …)` core that takes its filesystem, input, and output sinks as parameters (`&dyn FileSystem`, `&mut dyn Read`, `&mut dyn Write`) and owns all behavior, plus a one-line `handle(self)` that supplies `PhysicalFS`, stdin, stdout, stderr, and the `is_terminal()` color decision. `std::fs`, `stdin()`, and `stdout()` appear only in `handle` (and `cli/mod.rs`). `integration_tests.rs` drives `ApplyArgs::run` and `IngestArgs::run` end to end on a `MemoryFS`.
 
-- **search** → `Execute` walks + matches files → `MatchResult`s → `Format::from_matches` builds `Chunk`s (match line + context) → printed as the format.
-- **ingest** (`src/ingest.rs`) → reads `(path, line)` pairs from stdin/file in **jsonl / json / csv / grep** formats (auto-detected in `cli/ingest.rs` by sniffing the first bytes), reads context lines around each line, → same `MatchResult` → `Format` output. This lets you pipe arbitrary tool output (e.g. `rg --json`, compiler errors) into the editable format.
-- **apply** (`src/apply.rs`) → parses an (edited) `Format` → `Format::validate` groups chunks by path and rejects overlaps (errors are **accumulated** across all files, not fail-fast), yielding a `Plan` of per-file `FileEdits` → `verify_plan` streams every file to a sink to catch out-of-bounds chunks → `apply_plan` reconstructs each file by streaming the original and interleaving chunk content, staged via `StagingFs` and committed atomically. `--dry-run` stops after `verify_plan` and reports what would change without writing.
-
-`Format::file_chunks()` groups sorted chunks by path so apply can process one file at a time. `Format::merge()` (currently `#[allow(dead_code)]`) combines adjacent/overlapping chunks.
+- **search** → `Execute` walks + matches files → `MatchResult`s (`types.rs`; the match line plus `context_before`/`context_after` as raw newline-terminated `String`s) → `Format::from_matches` builds `Chunk`s (match line + context) → written as the format. `search` keeps `Execute` as its composition root; only its output is injected.
+- **ingest** (`src/ingest.rs`) → reads `(path, line)` locations from stdin/file in **jsonl / json / csv / grep** formats (auto-detected in `cli/ingest.rs` by sniffing the first bytes; decoders deserialize straight into `types::IngestInput`, decode failures are `cli::ingest::IngestParseError`, unparseable grep lines are logged with `tracing::warn!` and skipped), reads context lines around each location through `ReadFs` → same `MatchResult` → `Format` output. This lets you pipe arbitrary tool output (e.g. `rg -n`, compiler errors) into the editable format.
+- **apply** (`src/apply.rs`) → parses an (edited) `Format` → `Format::validate()` groups chunks by path and rejects overlaps (errors are **accumulated** across all files, not fail-fast) → yields a `Plan` of per-file `FileEdits` (a proof-of-validation type: sorted, non-overlapping chunks for one path) → `verify_plan(&Plan, &dyn ReadFs)` streams every file to a sink to catch out-of-bounds chunks → `apply_plan(&Plan, &dyn FileSystem)` reconstructs each file by streaming the original and interleaving chunk content in constant memory, staged via `StagingFs` and committed atomically. `--dry-run` stops after `verify_plan` and reports what would change without writing. `apply_format_streaming` only streams and can only report `ChunkOutOfBounds`/`Io`; it cannot receive unvalidated chunks.
 
 ### Error handling conventions
 
-- Library modules define their own `thiserror` enum (`SearchError`, `MatcherError`, `FilesystemError`, `ApplyError`, `IngestError`, `FormatError`).
-- `cli::Error` (`cli/error.rs`) is the root type that `#[from]`-converts all of them and derives `miette::Diagnostic` (the `Format` variant is `#[diagnostic(transparent)]`); `main.rs` renders it as a `miette::Report` to **stderr** (colored only when stderr is a terminal; logs also go to stderr via `tracing`; stdout is reserved for the chunk format and status output) and exits 1.
+- Library modules define their own `thiserror` enum (`SearchError`, `MatcherError`, `FilesystemError`, `ApplyError` accumulated into `ApplyErrors`, `IngestError`, `FormatError`); the CLI's input decoders use `cli::ingest::IngestParseError`.
+- `cli::Error` (`cli/error.rs`) is the root type that `#[from]`-converts all of them and derives `miette::Diagnostic` (the `Format` variant is `#[diagnostic(transparent)]`); `main.rs` renders it as a `miette::Report` to **stderr** (colored only when stderr is a terminal) and exits 1. Logs also go to **stderr** via `tracing` (`cli/mod.rs` installs the subscriber with `.with_writer(std::io::stderr)`). **stdout is reserved for the chunk format and status output**, so `TOOL | bulked ingest > edits.bk` never captures diagnostics.
 - `FormatError` carries `miette` source spans for human-friendly parse diagnostics — preserve the span/offset bookkeeping when touching `format/parse.rs`.

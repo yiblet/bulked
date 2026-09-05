@@ -5,9 +5,8 @@ mod error;
 mod ingest;
 mod search;
 
-use crate::cli::ingest::IngestArgs;
-
-use self::apply::ApplyArgs;
+pub(crate) use self::apply::ApplyArgs;
+pub(crate) use self::ingest::IngestArgs;
 use self::search::SearchArgs;
 pub use error::Error;
 
@@ -89,14 +88,17 @@ enum Command {
 pub fn run() -> Result<(), Error> {
     let cli = Cli::parse();
 
-    // Initialize tracing based on verbosity
+    // Initialize tracing based on verbosity. Logs always go to stderr so that
+    // stdout stays reserved for the chunk format and status output.
     if cli.verbose {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::DEBUG)
+            .with_writer(std::io::stderr)
             .init();
     } else {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::WARN)
+            .with_writer(std::io::stderr)
             .init();
     }
 

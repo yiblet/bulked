@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{BufWriter, IsTerminal, Write};
+use std::io::{self, BufWriter, IsTerminal, Write};
 use std::path::PathBuf;
 
 use clap::Args;
@@ -33,7 +33,7 @@ EXAMPLES:
   bulked search 'TODO' src/ --plain
 
 Then edit edits.bk and run `bulked apply --input edits.bk`.")]
-pub(super) struct SearchArgs {
+pub(crate) struct SearchArgs {
     /// Regex pattern to search for
     pattern: String,
 
@@ -67,7 +67,19 @@ pub(super) struct SearchArgs {
 }
 
 impl SearchArgs {
-    pub fn handle(self) -> Result<(), super::Error> {
+    /// Run `search`, writing the chunk format to `out` and status lines to `err`.
+    ///
+    /// `search` keeps using [`Execute`] (the production composition root over
+    /// the real filesystem and walker); only the output side is injected.
+    /// `color` says whether to ANSI-highlight matches in `out`. When `--output`
+    /// is set, [`SearchArgs::handle`] opens that file and passes it as `out`;
+    /// `run` then reports a status line to `err`.
+    pub fn run(
+        self,
+        out: &mut dyn Write,
+        err: &mut dyn Write,
+        color: bool,
+    ) -> Result<(), super::Error> {
         // Configure and execute search
         let config = ExecuteConfig::new(self.pattern, self.paths)
             .with_context_lines(self.context)
@@ -77,34 +89,43 @@ impl SearchArgs {
 
         let result = Execute::new(&config)?;
 
-        // When writing to a file, never colorize (it's not a terminal).
-        let mut sink: Box<dyn Write> = match &self.output {
-            Some(path) => Box::new(BufWriter::new(File::create(path)?)),
-            None => Box::new(std::io::stdout()),
-        };
-        let is_tty = self.output.is_none() && std::io::stdout().is_terminal();
-
         let mut chunks = 0;
         for page in result.search_iter() {
             let matches = page?;
             let format = Format::from_matches(&matches);
             chunks += format.len();
-            write!(sink, "{}", format.display(self.plain, is_tty))?;
+            write!(out, "{}", format.display(self.plain, color))?;
         }
 
-        sink.flush()?;
+        out.flush()?;
 
-        // When the output went to a file, report a status line to stderr.
+        // When the output went to a file, report a status line.
         if let Some(path) = &self.output {
             let plural = if chunks == 1 { "chunk" } else { "chunks" };
-            eprintln!(
+            writeln!(
+                err,
                 "bulked search wrote {} {} to {}",
                 chunks,
                 plural,
                 path.display()
-            );
+            )?;
         }
 
         Ok(())
+    }
+
+    pub fn handle(self) -> Result<(), super::Error> {
+        let mut stderr = io::stderr();
+        match self.output.clone() {
+            // When writing to a file, never colorize (it's not a terminal).
+            Some(path) => {
+                let mut file = BufWriter::new(File::create(path)?);
+                self.run(&mut file, &mut stderr, false)
+            }
+            None => {
+                let color = io::stdout().is_terminal();
+                self.run(&mut io::stdout(), &mut stderr, color)
+            }
+        }
     }
 }

@@ -1,10 +1,11 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use clap::Args;
 
 use crate::apply::{apply_plan, verify_plan};
-use crate::filesystem;
+use crate::filesystem::FileSystem;
+use crate::filesystem::physical::PhysicalFS;
 use crate::format::Format;
 
 #[derive(Args, Debug)]
@@ -38,52 +39,65 @@ EXAMPLES:
 
   # apply edits straight from a pipe
   bulked ingest locations.csv | my-edit-script | bulked apply")]
-pub(super) struct ApplyArgs {
+pub(crate) struct ApplyArgs {
     /// Edited chunk file to apply (reads from stdin if not specified)
     #[arg(short, long)]
-    input: Option<PathBuf>,
+    pub(crate) input: Option<PathBuf>,
 
     /// Validate and report what would change, without writing any files
     #[arg(short, long)]
-    dry_run: bool,
+    pub(crate) dry_run: bool,
 }
 
 impl ApplyArgs {
-    pub fn handle(self) -> Result<(), super::Error> {
-        // Read format from input file or stdin
-        let input = match self.input {
-            Some(path) => std::fs::read_to_string(&path)?,
-            None => {
-                let mut buffer = String::new();
-                io::stdin().read_to_string(&mut buffer)?;
-                buffer
-            }
+    /// Run `apply` against an injected filesystem, input stream, and output sink.
+    ///
+    /// This owns all of the subcommand's behavior; [`ApplyArgs::handle`] is the
+    /// thin production wrapper that supplies `PhysicalFS`, stdin, and stdout.
+    /// `--input` is read through `fs`, otherwise the chunk format is read from
+    /// `input`. Every status line goes to `out`.
+    pub fn run(
+        self,
+        fs: &dyn FileSystem,
+        input: &mut dyn Read,
+        out: &mut dyn Write,
+    ) -> Result<(), super::Error> {
+        let mut buffer = String::new();
+        match &self.input {
+            Some(path) => fs.read(path)?.read_to_string(&mut buffer)?,
+            None => input.read_to_string(&mut buffer)?,
         };
 
         // Parse the format, then validate it into a plan: one group of sorted,
         // non-overlapping chunks per file. Every structural error is reported here.
-        let format = input.parse::<Format>()?;
+        let format = buffer.parse::<Format>()?;
         let plan = format.validate()?;
 
-        let fs = filesystem::physical::PhysicalFS;
         if self.dry_run {
             // Phase 1 only: verify every file (reads + reconstructs, writes nothing).
-            verify_plan(&plan, &fs)?;
+            verify_plan(&plan, fs)?;
             for edits in plan.files() {
-                println!(
+                writeln!(
+                    out,
                     "Would apply {} chunks to {}",
                     edits.chunks().len(),
                     edits.path().display()
-                );
+                )?;
             }
         } else {
-            apply_plan(&plan, &fs)?;
-            println!(
+            apply_plan(&plan, fs)?;
+            writeln!(
+                out,
                 "Successfully applied changes to {} chunks",
                 plan.chunk_count()
-            );
+            )?;
         }
 
+        out.flush()?;
         Ok(())
+    }
+
+    pub fn handle(self) -> Result<(), super::Error> {
+        self.run(&PhysicalFS, &mut io::stdin(), &mut io::stdout())
     }
 }
