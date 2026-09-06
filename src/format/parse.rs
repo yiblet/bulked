@@ -1,4 +1,5 @@
-use super::escaping::unescape_content;
+use super::escaping::unescape_line;
+use super::fingerprint::Fingerprint;
 use super::range::LineRange;
 use super::types::{Chunk, Format, FormatError};
 use nom::combinator::opt;
@@ -47,7 +48,16 @@ pub(super) enum ParserErrorKind {
         value: String,
         len: usize,
     },
+    InvalidFingerprint {
+        value: String,
+        len: usize,
+    },
     MissingEndDelimiter {
+        start_suffix_len: usize,
+        start_len: usize,
+    },
+    /// A content line starts with an unescaped `@` that is not the `@@@` terminator.
+    UnescapedAtLine {
         start_suffix_len: usize,
         start_len: usize,
     },
@@ -109,6 +119,14 @@ impl ParserError {
                     span: (offset, len).into(),
                 }
             }
+            ParserErrorKind::InvalidFingerprint { value, len } => {
+                let offset = source.len() - self.suffix_len - len;
+                FormatError::InvalidFingerprint {
+                    value,
+                    src,
+                    span: (offset, len).into(),
+                }
+            }
             ParserErrorKind::MissingEndDelimiter {
                 start_len,
                 start_suffix_len,
@@ -117,6 +135,20 @@ impl ParserError {
                 start_span: (source.len() - start_suffix_len, start_len).into(),
                 eof_span: (src.len().saturating_sub(1), 1).into(),
             },
+            ParserErrorKind::UnescapedAtLine {
+                start_len,
+                start_suffix_len,
+            } => {
+                let offset = source.len() - self.suffix_len;
+                let end = source[offset..]
+                    .find('\n')
+                    .map_or(source.len(), |i| offset + i);
+                FormatError::UnescapedAtLine {
+                    src,
+                    start_span: (source.len() - start_suffix_len, start_len).into(),
+                    span: (offset, end - offset).into(),
+                }
+            }
             ParserErrorKind::Nom { .. } => FormatError::NoChunks { src },
         }
     }
@@ -186,7 +218,7 @@ fn chunk_parser(input: &str) -> ParseResult<'_, Chunk> {
     let chunk_start_suffix_len = input.len();
     let header_len = input.split_inclusive('\n').next().map_or(0, str::len);
 
-    let (input, (path, range)) = start_delimiter(input)?;
+    let (input, (path, range, fingerprint)) = start_delimiter(input)?;
 
     let (input, mut content) = chunk_content(chunk_start_suffix_len, header_len)(input)?;
 
@@ -195,20 +227,20 @@ fn chunk_parser(input: &str) -> ParseResult<'_, Chunk> {
         content.pop();
     }
 
-    let unescaped_content = unescape_content(&content);
     // `@@@-` is not stored on the chunk: the trailing newline was stripped above, so
     // the serializer derives the terminator from `content.ends_with('\n')`.
     Ok((
         input,
-        Chunk::new(path, range, unescaped_content.to_string()),
+        Chunk::new(path, range, content).with_fingerprint(fingerprint),
     ))
 }
 
-/// Parser for the start delimiter: @path:line:numlines
+/// Parser for the start delimiter: `@path:line:numlines[ #fingerprint]`
 ///
 /// Both numbers must be non-zero; `@f:0:1` and `@f:1:0` are failures whose spans
-/// label the zero.
-fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, LineRange)> {
+/// label the zero. Whitespace may follow `numlines` and the optional fingerprint;
+/// any other trailing text is an invalid delimiter whose span labels that text.
+fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, LineRange, Option<Fingerprint>)> {
     // Use closures to lazily construct errors with the correct suffix length
     let invalid_failure = || nom::Err::Failure(invalid_delimiter_error(input));
     let invalid_error = || nom::Err::Error(invalid_delimiter_error(input));
@@ -229,25 +261,55 @@ fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, LineRange)> {
 
     let (input, _) = char(':')(input).map_err(|_: nom::Err<ParserError>| invalid_failure())?;
 
-    let (input, numlines_str) = take_till1(|c| c == '\n' || c == '\r')(input)
+    let (input, numlines_str) = take_till1(|c: char| c.is_whitespace() || c == '#')(input)
         .map_err(|_: nom::Err<ParserError>| invalid_failure())?;
     let numlines = parse_nonzero_segment(numlines_str, input, |value, len| {
         ParserErrorKind::InvalidNumLines { value, len }
     })?;
 
     let (input, _) = space0(input)?;
-    let (input, _) = newline(input)?;
+
+    // Optional ` #xxxxxxxx` fingerprint of the original lines.
+    let (input, fingerprint) = match char::<_, ParserError>('#')(input) {
+        Ok((rest, _)) => {
+            let (rest, hex) = take_while(|c: char| !c.is_whitespace())(rest)?;
+            let fingerprint = hex.parse::<Fingerprint>().map_err(|_| {
+                nom::Err::Failure(ParserError::new(
+                    rest,
+                    ParserErrorKind::InvalidFingerprint {
+                        value: hex.to_string(),
+                        len: hex.len(),
+                    },
+                ))
+            })?;
+            (rest, Some(fingerprint))
+        }
+        Err(_) => (input, None),
+    };
+
+    let (input, _) = space0(input)?;
+    // Anything else before the end of the header line is an error labelled at
+    // that text (e.g. `@f:1:1 oops`).
+    let (input, _) = newline(input)
+        .map_err(|_: nom::Err<ParserError>| nom::Err::Failure(invalid_delimiter_error(input)))?;
 
     Ok((
         input,
         (
             PathBuf::from(path_str),
             LineRange::new(line_number, numlines),
+            fingerprint,
         ),
     ))
 }
 
 /// Parser factory for chunk content until the @@@ end delimiter.
+///
+/// Content is collected line by line and each line is unescaped as it is read
+/// (see [`super::escaping`]). A line that starts with `@` is never content: it is
+/// either the `@@@` terminator or a mistake (a forgotten `@@@`, or an unescaped
+/// `@decorator`), which is reported with spans on both the chunk header and the
+/// offending line rather than silently swallowed into the chunk.
 fn chunk_content<'a>(
     chunk_start_suffix_len: usize,
     header_len: usize,
@@ -270,10 +332,20 @@ fn chunk_content<'a>(
                 )));
             }
 
+            if current.starts_with('@') {
+                return Err(nom::Err::Failure(ParserError::new(
+                    current,
+                    ParserErrorKind::UnescapedAtLine {
+                        start_len: header_len,
+                        start_suffix_len: chunk_start_suffix_len,
+                    },
+                )));
+            }
+
             let (rest, line) = not_newline(current)?;
 
-            // Add the line content
-            content.push_str(line);
+            // Add the line content, minus the one `\` that protected its start.
+            content.push_str(unescape_line(line));
 
             current = match newline(rest) {
                 Ok((rest, _)) => {
@@ -389,11 +461,41 @@ more content
     }
 
     #[test]
-    fn test_format_from_str_with_escaped_chars() {
-        let input = "@test.txt:1:1\nuser\\@domain.com\\\\path\n@@@\n";
+    fn test_format_from_str_escapes_only_line_starts() {
+        // Mid-line `@` and `\` are verbatim; only a leading `\@` / `\\` is unescaped.
+        let input =
+            "@test.txt:1:4\nuser@domain.com\\path\n\\@dataclass\n\\\\server\n\\begin\n@@@\n";
 
         let format = Format::from_str(input).unwrap();
-        assert_eq!(chunks(&format)[0].content(), "user@domain.com\\path\n");
+        assert_eq!(
+            chunks(&format)[0].content(),
+            "user@domain.com\\path\n@dataclass\n\\server\n\\begin\n"
+        );
+    }
+
+    #[test]
+    fn test_unescaped_at_line_inside_chunk_is_an_error_with_spans() {
+        // The user deleted the `@@@` between two chunks: the second header must not
+        // become content of the first.
+        let input = "@a.rs:2:1\n    // one\n\n@a.rs:8:1\n    // two\n@@@\n";
+        match Format::from_str(input).unwrap_err() {
+            FormatError::UnescapedAtLine {
+                start_span, span, ..
+            } => {
+                assert_eq!(start_span.offset(), 0);
+                let second = input.find("@a.rs:8:1").unwrap();
+                assert_eq!(span.offset(), second);
+                assert_eq!(span.len(), "@a.rs:8:1".len());
+            }
+            other => panic!("Expected UnescapedAtLine, got {other:?}"),
+        }
+
+        // An unescaped decorator is the same mistake.
+        let input = "@a.py:1:1\n@property\n@@@\n";
+        assert!(matches!(
+            Format::from_str(input).unwrap_err(),
+            FormatError::UnescapedAtLine { .. }
+        ));
     }
 
     #[test]
@@ -499,6 +601,10 @@ more content
             ),
             ("Invalid delimiter", "@src/main.rs:10\nfn main() {}\n@@@\n"),
             ("Missing end delimiter", "@src/main.rs:10:1\nfn main() {}\n"),
+            (
+                "Unescaped @ line",
+                "@src/main.rs:10:1\nfn main() {}\n@src/main.rs:20:1\nx\n@@@\n",
+            ),
         ];
 
         for (name, input) in test_cases {
@@ -561,6 +667,54 @@ line 10
 
         let res = start_delimiter(input).unwrap();
         assert_eq!(res.0, "");
+    }
+
+    #[test]
+    fn test_header_fingerprint_and_trailing_whitespace() {
+        let fp = "@f:3:2 #deadbeef\nx\n@@@\n";
+        let format = Format::from_str(fp).unwrap();
+        assert_eq!(
+            chunks(&format)[0].fingerprint(),
+            Some("deadbeef".parse().unwrap())
+        );
+        assert_eq!(
+            (
+                chunks(&format)[0].start_line(),
+                chunks(&format)[0].num_lines()
+            ),
+            (3, 2)
+        );
+
+        // Trailing whitespace after numlines (or the fingerprint) is not an error.
+        let ws = "@f:3:2   \nx\n@@@\n";
+        assert_eq!(chunks(&Format::from_str(ws).unwrap())[0].num_lines(), 2);
+        let ws_fp = "@f:3:2 #deadbeef \t\nx\n@@@\n";
+        assert!(Format::from_str(ws_fp).is_ok());
+        // Fingerprint directly after numlines, no space.
+        let tight = "@f:3:2#deadbeef\nx\n@@@\n";
+        assert!(Format::from_str(tight).is_ok());
+    }
+
+    #[test]
+    fn test_header_bad_fingerprint_and_trailing_garbage_have_spans() {
+        let input = "@f:3:2 #dead\nx\n@@@\n";
+        match Format::from_str(input).unwrap_err() {
+            FormatError::InvalidFingerprint { value, span, .. } => {
+                assert_eq!(value, "dead");
+                assert_eq!(span.offset(), input.find("dead").unwrap());
+                assert_eq!(span.len(), 4);
+            }
+            other => panic!("Expected InvalidFingerprint, got {other:?}"),
+        }
+
+        let input = "@f:3:2 oops\nx\n@@@\n";
+        match Format::from_str(input).unwrap_err() {
+            FormatError::InvalidDelimiter { span, .. } => {
+                assert_eq!(span.offset(), input.find("oops").unwrap());
+                assert_eq!(span.len(), 4);
+            }
+            other => panic!("Expected InvalidDelimiter, got {other:?}"),
+        }
     }
 
     #[test]

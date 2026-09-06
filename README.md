@@ -42,12 +42,20 @@ fn main() {
 @@@
 ```
 
-- The header is `@<path>:<start-line>:<num-lines>`.
+- The header is `@<path>:<start-line>:<num-lines>`, optionally followed by
+  ` #<fingerprint>`: eight hex digits that `ingest`/`search` compute from the
+  original lines. `apply` refuses the whole file if those lines have changed
+  since (you edited the file in between, or already applied this `.bk`), so a
+  stale edit can never land at a shifted position. Chunks you write by hand can
+  leave the fingerprint off; they are applied unchecked.
 - Edit the lines between the header and the closing `@@@`.
 - Everything outside chunks is treated as comments and ignored on apply, so
   notes you leave in the file are harmless.
 - Use `@@@-` instead of `@@@` to mean "no trailing newline at end of file".
-- Inside content, write `\@` for a literal `@` and `\\` for a literal `\`.
+- A content line may not start with `@` (that is how `@@@` ends a chunk). If a
+  line of content starts with `@`, `\@` or `\\`, put one extra `\` in front of
+  it — `ingest` and `search` do this for you. Nothing else is escaped: `a@b.com`
+  or `"\\d+"` mid-line are written exactly as they appear in the file.
 - You may add, remove, or change lines freely inside a chunk — the line count in
   the header describes the *original* lines being replaced.
 
@@ -123,8 +131,9 @@ bulked search 'TODO' src/ --plain
 `apply` parses the (edited) chunk format and writes each change back into the
 right place in each file. Before writing, every chunk is validated together
 (errors are reported all at once, not one at a time): chunks must stay sorted,
-must not overlap, must point at lines that exist, and must have a non-zero
-length. If anything fails, nothing is written.
+must not overlap, must point at lines that exist, must have a non-zero
+length, and their original lines must still match the header fingerprint. If
+anything fails, nothing is written.
 
 ```bash
 # preview what would change, without touching anything

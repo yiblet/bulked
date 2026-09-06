@@ -17,16 +17,23 @@ comments you leave in the file are harmless.
 
 Before writing, every chunk is validated together (errors are reported all at
 once, not one at a time): chunks must stay sorted, must not overlap, must point
-at lines that exist in the file, and must have a non-zero length. If anything
-fails, nothing is written.
+at lines that exist in the file, must have a non-zero length, and their original
+lines must still match the header fingerprint. If anything fails, nothing is
+written.
 
 THE CHUNK FORMAT:
-  @path/to/file.rs:<start-line>:<num-lines>
+  @path/to/file.rs:<start-line>:<num-lines> #<fingerprint>
   <the replacement content for those lines>
   @@@
 
+  * The fingerprint (8 hex digits) is computed by ingest/search from the original
+    lines. apply refuses the plan if those lines changed since — the file was
+    edited, or this .bk was already applied. Hand-written chunks may omit it.
+
   * Use `@@@-` instead of `@@@` to mean \"no trailing newline at end of file\".
-  * Inside content, write `\\@` for a literal `@` and `\\\\` for a literal `\\`.
+  * A content line may not start with `@`. If a line of content starts with `@`,
+    `\\@` or `\\\\`, put one extra `\\` in front of it (ingest/search do this for
+    you). Nothing mid-line is escaped.
   * You may add, remove, or change lines freely inside a chunk — the line count
     in the header describes the ORIGINAL lines being replaced.
 

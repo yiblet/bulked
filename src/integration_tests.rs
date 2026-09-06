@@ -317,7 +317,10 @@ fn test_ingest_handler_end_to_end_on_memory_fs() {
 
     assert_eq!(
         String::from_utf8(out).unwrap(),
-        "@/f.txt:1:3\na\nb\nc\n@@@\n"
+        format!(
+            "@/f.txt:1:3 #{}\na\nb\nc\n@@@\n",
+            crate::format::Fingerprint::of(b"a\nb\nc\n")
+        )
     );
     assert!(
         err.is_empty(),

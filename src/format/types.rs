@@ -1,3 +1,4 @@
+use super::fingerprint::Fingerprint;
 use super::range::LineRange;
 use miette::{Diagnostic, SourceSpan};
 use std::fmt;
@@ -12,7 +13,7 @@ pub enum FormatError {
     #[error("Invalid start delimiter")]
     #[diagnostic(
         code(format::invalid_delimiter),
-        help("Expected format: @<path>:<line>:<numlines>")
+        help("Expected format: @<path>:<line>:<numlines>[ #<fingerprint>]")
     )]
     InvalidDelimiter {
         #[source_code]
@@ -47,6 +48,21 @@ pub enum FormatError {
         span: SourceSpan,
     },
 
+    #[error("Invalid fingerprint: {value}")]
+    #[diagnostic(
+        code(format::invalid_fingerprint),
+        help(
+            "A fingerprint is `#` followed by exactly 8 hex digits, as written by `bulked ingest`/`search`. Delete it to apply the chunk unchecked"
+        )
+    )]
+    InvalidFingerprint {
+        value: String,
+        #[source_code]
+        src: String,
+        #[label("Expected 8 hex digits here")]
+        span: SourceSpan,
+    },
+
     #[error("Missing end delimiter @@@")]
     #[diagnostic(
         code(format::missing_end_delimiter),
@@ -59,6 +75,22 @@ pub enum FormatError {
         start_span: SourceSpan,
         #[label("Expected @@@ before end of file")]
         eof_span: SourceSpan,
+    },
+
+    #[error("A content line starts with `@` but is not the `@@@` terminator")]
+    #[diagnostic(
+        code(format::unescaped_at_line),
+        help(
+            "Every chunk ends with a line `@@@`. If this line starts a new chunk, add `@@@` above it; if it is content, write it as `\\@...`"
+        )
+    )]
+    UnescapedAtLine {
+        #[source_code]
+        src: String,
+        #[label("Chunk started here")]
+        start_span: SourceSpan,
+        #[label("Line starts with `@`")]
+        span: SourceSpan,
     },
 
     #[error("No chunks found in input")]
@@ -90,18 +122,25 @@ pub enum FormatError {
 ///
 /// ## Format Rules
 ///
-/// - **Start delimiter**: `@<path>:<line>:<numlines>` marks the beginning of a chunk
+/// - **Start delimiter**: `@<path>:<line>:<numlines>[ #<fingerprint>]` marks the
+///   beginning of a chunk
 ///   - `<path>`: Absolute or relative file path
 ///   - `<line>`: Starting line number (1-indexed)
-///   - `<numlines>`: Number of lines in the chunk
+///   - `<numlines>`: Number of *original* lines the chunk replaces
+///   - `#<fingerprint>` (optional): 8 hex digits, a [`Fingerprint`] of those
+///     original lines. `ingest`/`search` write it; `apply` refuses the plan if the
+///     lines no longer match (the file changed, or the chunk was already applied).
+///     A chunk without one is applied unchecked.
 ///
 /// - **End delimiter**: `@@@` marks the end of a chunk
 ///
 /// - **Comments**: Text between chunks (outside delimiters) is ignored and can be used for comments
 ///
-/// - **Escape sequences**: Inside chunk content:
-///   - `\\` represents a literal backslash
-///   - `\@` represents a literal at symbol
+/// - **Escaping** (see [`super::escaping`]): only the *start* of a content line
+///   is ever special. A content line starting with `@`, `\@` or `\\` is written
+///   with one extra `\` in front; on parse a line starting with `\@` or `\\` drops
+///   that first `\`. Nothing mid-line is escaped. An unescaped line starting with
+///   `@` inside a chunk is a parse error, never content.
 ///
 /// ## Example
 ///
@@ -115,9 +154,9 @@ pub enum FormatError {
 /// This is a comment - it will be ignored
 ///
 /// @src/lib.rs:5:2
-/// pub fn greet() \{
+/// pub fn greet() {
 ///     println!("Hi from lib");
-/// \}
+/// }
 /// @@@
 /// ```
 /// Format is a collection of chunks.
@@ -195,8 +234,12 @@ impl Format {
                 let range = LineRange::from_usize(start_line, num_lines)
                     .expect("a match contributes at least one line");
 
+                // The content *is* the original text at this point, so its
+                // fingerprint lets `apply` detect that the file has since changed.
+                let fingerprint = Fingerprint::of(content.as_bytes());
                 Chunk::new(match_result.file_path.clone(), range, content)
                     .with_match_range(match_range)
+                    .with_fingerprint(Some(fingerprint))
             })
             .collect();
 
@@ -260,6 +303,7 @@ pub struct Chunk {
     range: LineRange,
     content: String,
     match_range: Option<Range<usize>>,
+    fingerprint: Option<Fingerprint>,
 }
 
 impl Chunk {
@@ -270,6 +314,7 @@ impl Chunk {
             range,
             content,
             match_range: None,
+            fingerprint: None,
         }
     }
 
@@ -292,6 +337,18 @@ impl Chunk {
     pub fn with_match_range(mut self, match_range: Option<Range<usize>>) -> Self {
         self.match_range = match_range;
         self
+    }
+
+    /// Attach the [`Fingerprint`] of the original lines this chunk replaces.
+    #[must_use]
+    pub fn with_fingerprint(mut self, fingerprint: Option<Fingerprint>) -> Self {
+        self.fingerprint = fingerprint;
+        self
+    }
+
+    /// Fingerprint of the original lines, if the header carried one.
+    pub fn fingerprint(&self) -> Option<Fingerprint> {
+        self.fingerprint
     }
 
     #[must_use]
@@ -348,41 +405,66 @@ pub struct Display<'a> {
     pub highlight: bool,
 }
 
+/// Write `content` line by line with ambiguous line starts escaped (see
+/// [`crate::format::escaping`]), optionally wrapping the bytes in `highlight` in
+/// ANSI red. Escaping is decided per line *before* any color codes are inserted,
+/// so a match that begins mid-line can never be mistaken for a line start.
+fn write_escaped_content(
+    f: &mut fmt::Formatter,
+    content: &str,
+    highlight: Option<&Range<usize>>,
+) -> fmt::Result {
+    const RED: &str = "\x1b[31m";
+    const RESET: &str = "\x1b[0m";
+
+    let mut offset = 0;
+    for line in content.split_inclusive('\n') {
+        let (start, end) = (offset, offset + line.len());
+        offset = end;
+
+        if crate::format::escaping::needs_escape(line) {
+            f.write_str("\\")?;
+        }
+
+        match highlight {
+            // The highlighted bytes overlap this line: split it around them.
+            Some(range) if range.start < end && range.end > start => {
+                let hl_start = range.start.max(start) - start;
+                let hl_end = range.end.min(end) - start;
+                f.write_str(&line[..hl_start])?;
+                f.write_str(RED)?;
+                f.write_str(&line[hl_start..hl_end])?;
+                f.write_str(RESET)?;
+                f.write_str(&line[hl_end..])?;
+            }
+            _ => f.write_str(line)?,
+        }
+    }
+    Ok(())
+}
+
 fn display_format(f: &mut fmt::Formatter, format: &Format, highlight: bool) -> std::fmt::Result {
     for (idx, chunk) in format.iter().enumerate() {
         if idx != 0 {
             f.write_str("\n")?;
         };
 
-        // Start delimiter: @path:line:numlines
-        writeln!(
+        // Start delimiter: @path:line:numlines[ #fingerprint]
+        write!(
             f,
             "@{}:{}:{}",
             chunk.path().display(),
             chunk.start_line(),
             chunk.num_lines()
         )?;
+        if let Some(fingerprint) = chunk.fingerprint() {
+            write!(f, " #{fingerprint}")?;
+        }
+        writeln!(f)?;
 
         let content = chunk.content();
-        match chunk.match_range() {
-            Some(range) if highlight => {
-                let start_red = "\x1b[31m";
-                let end_red = "\x1b[0m";
-                write!(
-                    f,
-                    "{}{}{}{}{}",
-                    crate::format::escaping::escape_content(&content[..range.start]),
-                    start_red,
-                    crate::format::escaping::escape_content(&content[range.clone()]),
-                    end_red,
-                    crate::format::escaping::escape_content(&content[range.end..])
-                )?;
-            }
-            _ => {
-                // Escaped content (content already has trailing newline, don't add another)
-                write!(f, "{}", crate::format::escaping::escape_content(content))?;
-            }
-        }
+        let highlight_range = chunk.match_range().filter(|_| highlight);
+        write_escaped_content(f, content, highlight_range)?;
 
         // End delimiter: content that already ends with '\n' is closed by `@@@`;
         // otherwise finish the line and mark "no trailing newline at EOF" with `@@@-`.
@@ -501,6 +583,34 @@ mod tests {
         assert_eq!(chunk.path(), Path::new("src/file.rs"));
         assert_eq!((chunk.start_line(), chunk.num_lines()), (8, 4));
         assert_eq!(chunk.content(), "l8\nl9\nMATCH\nl11\n");
+        // The fingerprint covers exactly the original bytes of the range.
+        assert_eq!(
+            chunk.fingerprint(),
+            Some(Fingerprint::of(b"l8\nl9\nMATCH\nl11\n"))
+        );
+    }
+
+    #[test]
+    fn test_fingerprint_roundtrips_through_header() {
+        let fp = Fingerprint::of(b"orig\n");
+        let format = Format::new(vec![
+            Chunk::from_parts("t.txt", 5, 1, "new\n").with_fingerprint(Some(fp)),
+        ]);
+
+        let output = format.to_string();
+        assert_eq!(output, format!("@t.txt:5:1 #{fp}\nnew\n@@@\n"));
+
+        let parsed = Format::from_str(&output).unwrap();
+        assert_eq!(chunks(&parsed)[0].fingerprint(), Some(fp));
+        assert_eq!(parsed.to_string(), output);
+
+        // A chunk without a fingerprint serializes without the tag.
+        let plain = Format::new(vec![Chunk::from_parts("t.txt", 5, 1, "new\n")]);
+        assert_eq!(plain.to_string(), "@t.txt:5:1\nnew\n@@@\n");
+        assert_eq!(
+            chunks(&Format::from_str(&plain.to_string()).unwrap())[0].fingerprint(),
+            None
+        );
     }
 
     #[test]
@@ -616,8 +726,8 @@ mod tests {
         )]);
 
         let output = format.to_string();
-        // Special characters should be escaped
-        assert!(output.contains("user\\@domain.com\\\\path"));
+        // Mid-line `@` and `\` are not syntax, so they are written verbatim.
+        assert!(output.contains("\nuser@domain.com\\path\n"));
     }
 
     #[test]

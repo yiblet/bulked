@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 /// that the chunks are grouped by file, sorted, and non-overlapping. Everything
 /// downstream takes a [`FileEdits`] (one file's validated chunks) and can only
 /// fail on what it cannot know up front: the file's real length
-/// ([`ApplyError::ChunkOutOfBounds`]) and I/O.
+/// ([`ApplyError::ChunkOutOfBounds`]), whether the lines a chunk replaces still
+/// match the fingerprint recorded when it was generated
+/// ([`ApplyError::ContentChanged`]), and I/O.
 ///
 /// The reconstruction core is [`apply_format_streaming`], which reads the original
 /// file, interleaves the chunk replacements, and writes the result — all with
@@ -18,23 +20,46 @@ use std::path::{Path, PathBuf};
 /// 1. `Format::validate`: group by path (a `Format` is sorted by construction) and
 ///    reject any consecutive pair in a file whose [`LineRange`]s overlap. Errors are
 ///    accumulated across all files.
-/// 2. `verify_plan`: stream every file to a sink, accumulating bounds/IO errors
-///    across all files. Nothing is written.
+/// 2. `verify_plan`: stream every file to a sink, accumulating bounds, fingerprint
+///    and IO errors across all files. Nothing is written.
 /// 3. `apply_plan`: `verify_plan`, then stage each reconstruction via a
-///    [`StagingFs`] and commit all of them at once.
+///    [`StagingFs`] and commit all of them at once. Staging streams the original
+///    again and re-checks every fingerprint against the very bytes it replaces, so
+///    the commit only happens if nothing changed between the two passes.
 use crate::{
     filesystem::{FileSystem, ReadFs, staging::StagingFs},
-    format::{Chunk, Format, LineRange},
+    format::{Chunk, Fingerprint, FingerprintHasher, Format, LineRange},
 };
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ApplyError {
-    #[error("Overlapping chunks at lines {first} and {second}")]
-    OverlappingChunks { first: LineRange, second: LineRange },
+    #[error("{path}: overlapping chunks at lines {first} and {second}")]
+    OverlappingChunks {
+        path: PathBuf,
+        first: LineRange,
+        second: LineRange,
+    },
 
-    #[error("Chunk at lines {range} exceeds file length of {file_lines} lines")]
-    ChunkOutOfBounds { range: LineRange, file_lines: usize },
+    #[error("{path}: chunk at lines {range} exceeds file length of {file_lines} lines")]
+    ChunkOutOfBounds {
+        path: PathBuf,
+        range: LineRange,
+        file_lines: usize,
+    },
+
+    /// The lines a chunk replaces no longer match the fingerprint in its header:
+    /// the file was edited after the chunk was generated, or the chunk was already
+    /// applied. Either way the header's line numbers can no longer be trusted.
+    #[error(
+        "{path}: lines {range} changed since this chunk was generated (header fingerprint {expected}, file has {actual}); the file was edited, or this chunk was already applied"
+    )]
+    ContentChanged {
+        path: PathBuf,
+        range: LineRange,
+        expected: Fingerprint,
+        actual: Fingerprint,
+    },
 
     #[error("Failed to modify file {path}: {source}")]
     ModifyError {
@@ -141,7 +166,11 @@ impl Format {
             for pair in chunks.windows(2) {
                 let (first, second) = (pair[0].range(), pair[1].range());
                 if first.overlaps(second) {
-                    errors.push(ApplyError::OverlappingChunks { first, second });
+                    errors.push(ApplyError::OverlappingChunks {
+                        path: path.to_path_buf(),
+                        first,
+                        second,
+                    });
                 }
             }
             files.push(FileEdits { path, chunks });
@@ -163,9 +192,33 @@ fn modify_err(path: &Path, source: crate::filesystem::FilesystemError) -> ApplyE
 }
 
 /// The bounds error for `range` against a file of `file_lines` lines, if any.
-fn out_of_bounds(range: LineRange, file_lines: usize) -> Option<ApplyError> {
-    (range.end_inclusive() > file_lines)
-        .then_some(ApplyError::ChunkOutOfBounds { range, file_lines })
+fn out_of_bounds(path: &Path, range: LineRange, file_lines: usize) -> Option<ApplyError> {
+    (range.end_inclusive() > file_lines).then(|| ApplyError::ChunkOutOfBounds {
+        path: path.to_path_buf(),
+        range,
+        file_lines,
+    })
+}
+
+/// Compare the fingerprint of the original bytes a chunk replaced (`hasher`) with
+/// the one recorded in its header, if any, and record a mismatch.
+fn check_fingerprint(
+    path: &Path,
+    chunk: &Chunk,
+    hasher: FingerprintHasher,
+    errors: &mut Vec<ApplyError>,
+) {
+    let actual = hasher.finish();
+    if let Some(expected) = chunk.fingerprint()
+        && expected != actual
+    {
+        errors.push(ApplyError::ContentChanged {
+            path: path.to_path_buf(),
+            range: chunk.range(),
+            expected,
+            actual,
+        });
+    }
 }
 
 /// Size of the fixed read buffer used by [`apply_format_streaming`]. Reconstruction
@@ -185,15 +238,22 @@ const STREAM_BUF_SIZE: usize = 64 * 1024;
 /// verbatim, preserving exact bytes including trailing-newline / no-trailing-newline
 /// semantics.
 ///
+/// The bytes skipped for each chunk are fed to a [`FingerprintHasher`] as they go
+/// by; when the chunk's range ends, the result is compared with the fingerprint in
+/// the chunk header (if it has one). Because this runs on the same read that
+/// produces the output, a chunk whose original lines changed can never be written.
+///
 /// # Errors
 /// Returns one [`ApplyError::ChunkOutOfBounds`] per chunk that references lines
-/// past EOF (all of them, accumulated), or [`ApplyError::Io`] on a read/write
-/// failure.
+/// past EOF and one [`ApplyError::ContentChanged`] per chunk whose original lines
+/// no longer match their fingerprint (all of them, accumulated), or
+/// [`ApplyError::Io`] on a read/write failure.
 pub fn apply_format_streaming(
     edits: &FileEdits<'_>,
     mut reader: impl Read,
     writer: &mut dyn Write,
 ) -> Result<(), ApplyErrors> {
+    let path = edits.path();
     let chunks = edits.chunks();
     let range_at = |i: usize| chunks[i].range();
 
@@ -203,6 +263,10 @@ pub fn apply_format_streaming(
     let mut skip_until: usize = 1; // we are skipping original lines while cur_line < skip_until
     let mut at_line_start = true;
     let mut any_bytes = false;
+    // The chunk whose original lines are being skipped right now, with the running
+    // fingerprint of the bytes skipped so far.
+    let mut active: Option<(usize, FingerprintHasher)> = None;
+    let mut errors: Vec<ApplyError> = Vec::new();
 
     let to_io = |e: std::io::Error| ApplyErrors::from(ApplyError::Io(e));
 
@@ -212,6 +276,7 @@ pub fn apply_format_streaming(
             .write_all(chunks[idx].content().as_bytes())
             .map_err(to_io)?;
         skip_until = range_at(idx).end_exclusive();
+        active = Some((idx, FingerprintHasher::new()));
         idx += 1;
     }
 
@@ -228,28 +293,39 @@ pub fn apply_format_streaming(
             let skipping = cur_line < skip_until;
             match block.iter().position(|&b| b == b'\n') {
                 Some(pos) => {
-                    if !skipping {
+                    if skipping {
+                        if let Some((_, hasher)) = active.as_mut() {
+                            hasher.update(&block[..=pos]);
+                        }
+                    } else {
                         writer.write_all(&block[..=pos]).map_err(to_io)?;
                     }
                     block = &block[pos + 1..];
                     cur_line += 1;
                     at_line_start = true;
-                    // Emit a chunk that begins at this new line (once we are past any
-                    // active skip region).
-                    if idx < chunks.len()
-                        && range_at(idx).start() == cur_line
-                        && cur_line >= skip_until
-                    {
-                        writer
-                            .write_all(chunks[idx].content().as_bytes())
-                            .map_err(to_io)?;
-                        skip_until = range_at(idx).end_exclusive();
-                        idx += 1;
+                    if cur_line >= skip_until {
+                        // The active chunk's original lines are all behind us.
+                        if let Some((i, hasher)) = active.take() {
+                            check_fingerprint(path, &chunks[i], hasher, &mut errors);
+                        }
+                        // Emit a chunk that begins at this new line.
+                        if idx < chunks.len() && range_at(idx).start() == cur_line {
+                            writer
+                                .write_all(chunks[idx].content().as_bytes())
+                                .map_err(to_io)?;
+                            skip_until = range_at(idx).end_exclusive();
+                            active = Some((idx, FingerprintHasher::new()));
+                            idx += 1;
+                        }
                     }
                 }
                 None => {
                     // No newline in the remaining block: it is all part of `cur_line`.
-                    if !skipping {
+                    if skipping {
+                        if let Some((_, hasher)) = active.as_mut() {
+                            hasher.update(block);
+                        }
+                    } else {
                         writer.write_all(block).map_err(to_io)?;
                     }
                     at_line_start = false;
@@ -259,8 +335,7 @@ pub fn apply_format_streaming(
         }
     }
 
-    // At EOF, count the file's lines the same way `split_inclusive('\n')` does, then
-    // flag any chunk whose range extends past the end of the file.
+    // At EOF, count the file's lines the same way `split_inclusive('\n')` does.
     let file_lines = if !any_bytes {
         0
     } else if at_line_start {
@@ -268,10 +343,21 @@ pub fn apply_format_streaming(
     } else {
         cur_line
     };
-    let errors: Vec<ApplyError> = chunks
-        .iter()
-        .filter_map(|c| out_of_bounds(c.range(), file_lines))
-        .collect();
+
+    // A chunk still active here ends on the file's last line, which has no
+    // trailing newline (checked now), or runs past EOF (reported as out of bounds
+    // below instead; its fingerprint is meaningless).
+    if let Some((i, hasher)) = active.take()
+        && range_at(i).end_inclusive() <= file_lines
+    {
+        check_fingerprint(path, &chunks[i], hasher, &mut errors);
+    }
+
+    errors.extend(
+        chunks
+            .iter()
+            .filter_map(|c| out_of_bounds(path, c.range(), file_lines)),
+    );
 
     if errors.is_empty() {
         Ok(())
@@ -284,11 +370,11 @@ pub fn apply_format_streaming(
 ///
 /// This is exactly phase 1 of an atomic apply (and the entire `--dry-run` path): it
 /// streams every file through [`apply_format_streaming`] into a sink, accumulating
-/// all bounds/IO errors across all files. Nothing is read into memory whole and
-/// nothing is written.
+/// all bounds, fingerprint and IO errors across all files. Nothing is read into
+/// memory whole and nothing is written.
 ///
 /// # Errors
-/// Returns every bounds/IO error found across all files.
+/// Returns every bounds/fingerprint/IO error found across all files.
 pub fn verify_plan(plan: &Plan<'_>, fs: &dyn ReadFs) -> Result<(), ApplyErrors> {
     let mut errors = Vec::new();
     for edits in plan.files() {
@@ -384,6 +470,7 @@ pub fn apply_format_to_fs(format: &Format, fs: &dyn FileSystem) -> Result<(), Ap
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::Fingerprint;
     use std::path::PathBuf;
 
     fn lr(start: usize, len: usize) -> LineRange {
@@ -483,7 +570,7 @@ mod tests {
         let result = apply_format(&format, content);
         assert!(matches!(
             result.as_ref().map_err(|r| r.0.as_slice()),
-            Err([ApplyError::OverlappingChunks { first, second }])
+            Err([ApplyError::OverlappingChunks { first, second, .. }])
                 if *first == lr(1, 2) && *second == lr(2, 1)
         ));
     }
@@ -512,12 +599,12 @@ mod tests {
         let errors = apply_format(&format, content).unwrap_err();
         assert!(matches!(
             errors.0.as_slice(),
-            [ApplyError::OverlappingChunks { first, second }]
+            [ApplyError::OverlappingChunks { first, second, .. }]
                 if *first == lr(5, 3) && *second == lr(7, 2)
         ));
         assert_eq!(
             errors.0[0].to_string(),
-            "Overlapping chunks at lines 5-7 and 7-8"
+            "f: overlapping chunks at lines 5-7 and 7-8"
         );
     }
 
@@ -528,7 +615,7 @@ mod tests {
         let result = apply_format(&format, content);
         assert!(matches!(
             result.as_ref().map_err(|r| r.0.as_slice()),
-            Err([ApplyError::ChunkOutOfBounds { range, file_lines: 3 }])
+            Err([ApplyError::ChunkOutOfBounds { range, file_lines: 3, .. }])
                 if *range == lr(3, 2)
         ));
     }
@@ -550,24 +637,37 @@ mod tests {
     fn test_apply_errors_display_lists_each_error() {
         let errors = ApplyErrors(vec![
             ApplyError::OverlappingChunks {
+                path: PathBuf::from("a.rs"),
                 first: lr(1, 2),
                 second: lr(2, 1),
             },
             ApplyError::ChunkOutOfBounds {
+                path: PathBuf::from("b.rs"),
                 range: lr(3, 1),
                 file_lines: 2,
+            },
+            ApplyError::ContentChanged {
+                path: PathBuf::from("c.rs"),
+                range: lr(4, 2),
+                expected: Fingerprint::of(b"x"),
+                actual: Fingerprint::of(b"y"),
             },
         ]);
 
         let rendered = errors.to_string();
         assert_eq!(
             rendered,
-            "Failed to apply changes:\n  - Overlapping chunks at lines 1-2 and 2\n  - Chunk at lines 3 exceeds file length of 2 lines"
+            format!(
+                "Failed to apply changes:\n  - a.rs: overlapping chunks at lines 1-2 and 2\n  - b.rs: chunk at lines 3 exceeds file length of 2 lines\n  - c.rs: lines 4-5 changed since this chunk was generated (header fingerprint {}, file has {}); the file was edited, or this chunk was already applied",
+                Fingerprint::of(b"x"),
+                Fingerprint::of(b"y")
+            )
         );
-        assert_eq!(rendered.matches("\n  - ").count(), 2);
+        assert_eq!(rendered.matches("\n  - ").count(), 3);
 
         // A single error wraps into a one-element list and iterates back out.
         let single = ApplyErrors::from(ApplyError::ChunkOutOfBounds {
+            path: PathBuf::from("b.rs"),
             range: lr(3, 1),
             file_lines: 2,
         });
@@ -595,8 +695,8 @@ mod tests {
         assert!(matches!(
             errors.0.as_slice(),
             [
-                ApplyError::OverlappingChunks { first: a1, second: a2 },
-                ApplyError::OverlappingChunks { first: b1, second: b2 },
+                ApplyError::OverlappingChunks { first: a1, second: a2, .. },
+                ApplyError::OverlappingChunks { first: b1, second: b2, .. },
             ] if *a1 == lr(1, 2) && *a2 == lr(2, 1) && *b1 == lr(1, 1) && *b2 == lr(1, 1)
         ));
     }
@@ -644,7 +744,7 @@ mod tests {
         let errors = apply_format_streaming(edits, "a\nb\n".as_bytes(), &mut out).unwrap_err();
         assert!(matches!(
             errors.0.as_slice(),
-            [ApplyError::ChunkOutOfBounds { range, file_lines: 2 }] if *range == lr(3, 1)
+            [ApplyError::ChunkOutOfBounds { range, file_lines: 2, .. }] if *range == lr(3, 1)
         ));
     }
 
@@ -698,6 +798,146 @@ mod tests {
             err.0.as_slice(),
             [ApplyError::ChunkOutOfBounds { .. }]
         ));
+    }
+
+    // ---- fingerprint tests ----------------------------------------------------
+
+    fn fp(bytes: &[u8]) -> Option<Fingerprint> {
+        Some(Fingerprint::of(bytes))
+    }
+
+    #[test]
+    fn test_stream_fingerprint_match_applies() {
+        let chunks = vec![Chunk::from_parts("f", 2, 1, "B\n").with_fingerprint(fp(b"b\n"))];
+        assert_eq!(stream(chunks, "a\nb\nc\n").unwrap(), "a\nB\nc\n");
+
+        // Multi-line range, chunk at the start, chunk at the end with newline.
+        let chunks = vec![
+            Chunk::from_parts("f", 1, 2, "X\n").with_fingerprint(fp(b"a\nb\n")),
+            Chunk::from_parts("f", 4, 1, "Y\n").with_fingerprint(fp(b"d\n")),
+        ];
+        assert_eq!(stream(chunks, "a\nb\nc\nd\n").unwrap(), "X\nc\nY\n");
+    }
+
+    #[test]
+    fn test_stream_fingerprint_mismatch_is_content_changed() {
+        let chunks = vec![Chunk::from_parts("f", 2, 1, "B\n").with_fingerprint(fp(b"b\n"))];
+        let err = stream(chunks, "a\nX\nc\n").unwrap_err();
+        assert!(matches!(
+            err.0.as_slice(),
+            [ApplyError::ContentChanged { path, range, expected, actual }]
+                if path == Path::new("f")
+                    && *range == lr(2, 1)
+                    && Some(*expected) == fp(b"b\n")
+                    && Some(*actual) == fp(b"X\n")
+        ));
+
+        // Every mismatching chunk is reported, not just the first.
+        let chunks = vec![
+            Chunk::from_parts("f", 1, 1, "A\n").with_fingerprint(fp(b"nope\n")),
+            Chunk::from_parts("f", 3, 1, "C\n").with_fingerprint(fp(b"nope\n")),
+        ];
+        let err = stream(chunks, "a\nb\nc\n").unwrap_err();
+        assert!(matches!(
+            err.0.as_slice(),
+            [
+                ApplyError::ContentChanged { range: r1, .. },
+                ApplyError::ContentChanged { range: r3, .. },
+            ] if *r1 == lr(1, 1) && *r3 == lr(3, 1)
+        ));
+    }
+
+    #[test]
+    fn test_stream_fingerprint_without_tag_is_unchecked() {
+        let chunks = vec![Chunk::from_parts("f", 2, 1, "B\n")];
+        assert_eq!(stream(chunks, "a\nanything\nc\n").unwrap(), "a\nB\nc\n");
+    }
+
+    #[test]
+    fn test_stream_fingerprint_last_line_without_newline() {
+        // The original last line has no trailing newline: the fingerprint covers
+        // exactly the bytes present.
+        let chunks = vec![Chunk::from_parts("f", 2, 1, "B").with_fingerprint(fp(b"b"))];
+        assert_eq!(stream(chunks, "a\nb").unwrap(), "a\nB");
+
+        let chunks = vec![Chunk::from_parts("f", 2, 1, "B").with_fingerprint(fp(b"b\n"))];
+        assert!(matches!(
+            stream(chunks, "a\nb").unwrap_err().0.as_slice(),
+            [ApplyError::ContentChanged { .. }]
+        ));
+    }
+
+    #[test]
+    fn test_stream_fingerprint_across_read_buffer_boundaries() {
+        // The replaced lines straddle several read buffers; the incremental hash
+        // must equal the one-shot hash of the same bytes.
+        let long = "x".repeat(STREAM_BUF_SIZE + 17);
+        let content = format!("head\n{long}\n{long}\ntail\n");
+        let original = format!("{long}\n{long}\n");
+        let chunks =
+            vec![Chunk::from_parts("f", 2, 2, "Y\n").with_fingerprint(fp(original.as_bytes()))];
+        assert_eq!(stream(chunks, &content).unwrap(), "head\nY\ntail\n");
+    }
+
+    #[test]
+    fn test_stream_out_of_bounds_chunk_reports_bounds_not_fingerprint() {
+        let chunks = vec![Chunk::from_parts("f", 2, 3, "B\n").with_fingerprint(fp(b"zzz"))];
+        let err = stream(chunks, "a\nb\n").unwrap_err();
+        assert!(matches!(
+            err.0.as_slice(),
+            [ApplyError::ChunkOutOfBounds { range, file_lines: 2, .. }] if *range == lr(2, 3)
+        ));
+    }
+
+    #[test]
+    fn test_apply_to_fs_refuses_double_apply() {
+        use std::str::FromStr;
+        let fs = MemoryFS::new();
+        let a = PathBuf::from("/a.txt");
+        fs.add_file(&a, "a\nb\nc\n").unwrap();
+
+        // What `ingest` would have produced for line 2, then edited to two lines.
+        let bk = format!("@/a.txt:2:1 #{}\nb1\nb2\n@@@\n", Fingerprint::of(b"b\n"));
+        let format = Format::from_str(&bk).unwrap();
+
+        apply_format_to_fs(&format, &fs).unwrap();
+        assert_eq!(fs.read_to_string(&a).unwrap(), "a\nb1\nb2\nc\n");
+
+        // Applying the same file again must not insert at the shifted position.
+        let err = apply_format_to_fs(&format, &fs).unwrap_err();
+        assert!(matches!(
+            err.0.as_slice(),
+            [ApplyError::ContentChanged { range, .. }] if *range == lr(2, 1)
+        ));
+        assert_eq!(fs.read_to_string(&a).unwrap(), "a\nb1\nb2\nc\n");
+        assert_eq!(fs.file_count(), 1);
+    }
+
+    #[test]
+    fn test_apply_to_fs_refuses_stale_file_and_stays_atomic() {
+        let fs = MemoryFS::new();
+        let a = PathBuf::from("/a.txt");
+        let b = PathBuf::from("/b.txt");
+        fs.add_file(&a, "a1\na2\n").unwrap();
+        fs.add_file(&b, "b1\nb2\n").unwrap();
+
+        let format = Format::new(vec![
+            Chunk::from_parts(a.clone(), 1, 1, "A1\n").with_fingerprint(fp(b"a1\n")),
+            Chunk::from_parts(b.clone(), 2, 1, "B2\n").with_fingerprint(fp(b"b2\n")),
+        ]);
+
+        // Someone inserts a line at the top of b between ingest and apply.
+        fs.add_file(&b, "new\nb1\nb2\n").unwrap();
+
+        let err = apply_format_to_fs(&format, &fs).unwrap_err();
+        assert!(matches!(
+            err.0.as_slice(),
+            [ApplyError::ContentChanged { path, range, .. }] if path == &b && *range == lr(2, 1)
+        ));
+        // a's chunk was fine, but nothing at all was written.
+        assert_eq!(fs.read_to_string(&a).unwrap(), "a1\na2\n");
+        assert_eq!(fs.read_to_string(&b).unwrap(), "new\nb1\nb2\n");
+        assert_eq!(fs.file_count(), 2);
     }
 
     // ---- filesystem orchestration tests ---------------------------------------
@@ -767,8 +1007,8 @@ mod tests {
         assert!(matches!(
             errors.0.as_slice(),
             [
-                ApplyError::ChunkOutOfBounds { range: ra, file_lines: 1 },
-                ApplyError::ChunkOutOfBounds { range: rb, file_lines: 2 },
+                ApplyError::ChunkOutOfBounds { range: ra, file_lines: 1, .. },
+                ApplyError::ChunkOutOfBounds { range: rb, file_lines: 2, .. },
             ] if *ra == lr(4, 1) && *rb == lr(9, 1)
         ));
     }
