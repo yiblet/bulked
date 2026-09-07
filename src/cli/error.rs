@@ -3,10 +3,10 @@ use thiserror::Error;
 
 /// Root error type for CLI operations
 ///
-/// Only the `Format` variant carries miette diagnostic metadata (source spans,
-/// labels, help); it is marked transparent so the report rendered by `main.rs`
-/// shows the underlying `FormatError` diagnostic. All other variants render
-/// with their plain `Display` text.
+/// The `Format` and `IngestParse` variants carry miette diagnostic metadata
+/// (source spans, labels, help); they are marked transparent so the report
+/// rendered by `main.rs` shows the underlying diagnostic. All other variants
+/// render with their plain `Display` text.
 #[derive(Error, Debug, Diagnostic)]
 pub enum Error {
     #[error(transparent)]
@@ -20,6 +20,7 @@ pub enum Error {
     Format(#[from] crate::format::types::FormatError),
 
     #[error(transparent)]
+    #[diagnostic(transparent)]
     IngestParse(#[from] super::ingest::IngestParseError),
 
     #[error(transparent)]
@@ -64,13 +65,24 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_error_non_format_variant_has_no_labels() {
-        let err = Error::from(IngestParseError::MissingHeaders);
+    fn test_cli_error_plain_variant_has_no_labels() {
+        let err = Error::from(std::io::Error::other("boom"));
         assert!(err.labels().is_none());
         assert!(err.code().is_none());
+        assert_eq!(err.to_string(), "boom");
+    }
+
+    #[test]
+    fn test_cli_error_exposes_ingest_help() {
+        let err = Error::from(IngestParseError::NoLocations {
+            lines: 3,
+            first: "x".to_string(),
+            help: Some("add -n".to_string()),
+        });
         assert_eq!(
-            err.to_string(),
-            "csv does not contain the right headers. It must be at least path,line_number"
+            err.help().map(|h| h.to_string()),
+            Some("add -n".to_string())
         );
+        assert_eq!(err.code().unwrap().to_string(), "ingest::no_locations");
     }
 }

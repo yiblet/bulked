@@ -4,70 +4,59 @@ use std::path::PathBuf;
 
 use clap::Args;
 
+use crate::cli::Exit;
 use crate::execute::{Execute, ExecuteConfig};
 use crate::format::Format;
 
 #[derive(Args, Debug)]
-#[command(after_long_help = "\
-`search` is a grep-like recursive search that prints each match together with
-surrounding context as an editable `chunk`. It's the self-contained way to start
-a bulk edit when you want bulked to do the finding; if you'd rather feed in
-another tool's output, use `bulked ingest` instead.
+#[command(
+    after_long_help = r#"Recursively searches PATHS for PATTERN and prints each match, with context, as
+an editable chunk for `bulked apply`. Respects .gitignore and skips hidden files
+and bulked's own .bk files unless told otherwise.
 
-By default it respects `.gitignore`, skips hidden files, and skips bulked's own
-`.bk` output (so search never matches files it produced). The output is the same
-chunk format `bulked apply` consumes.
+EXAMPLES
+  bulked search 'TODO' src/ > edits.bk      # save the chunks (or: -o edits.bk)
+  bulked search 'fn main' -C 5 --hidden     # less context, include dotfiles
+  bulked search 'TODO' src/ --plain         # readable listing, not for apply
 
-EXAMPLES:
-  # find matches and save the editable format (redirect, or -o)
-  bulked search 'TODO' src/ > edits.bk
-  bulked search 'TODO' src/ -o edits.bk
-
-  # tighter context, include hidden files, ignore .gitignore
-  bulked search 'fn main' . -C 5 --hidden --no-ignore
-
-  # also search previously generated .bk files
-  bulked search 'TODO' . --include-bk
-
-  # human-readable view (not meant for `apply`)
-  bulked search 'TODO' src/ --plain
-
-Then edit edits.bk and run `bulked apply --input edits.bk`.")]
+Then edit edits.bk and run `bulked apply -i edits.bk`."#
+)]
 pub(crate) struct SearchArgs {
-    /// Regex pattern to search for
+    /// Regular expression to search for
     pattern: String,
 
-    /// Directory or file to search (default: current directory)
+    /// Files or directories to search
     #[arg(default_value = ".")]
     paths: Vec<PathBuf>,
 
-    /// Write the editable format to this file instead of stdout
+    /// Write the chunks to this file instead of stdout
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Lines of context to include before and after each match
+    /// Lines of context before and after each match
     #[arg(short = 'C', long, default_value = "20")]
     context: usize,
 
-    /// Search files normally excluded by .gitignore
+    /// Also search files excluded by .gitignore
     #[arg(long)]
     no_ignore: bool,
 
-    /// Include hidden files and directories in the search
+    /// Also search hidden files and directories
     #[arg(long)]
     hidden: bool,
 
-    /// Also search bulked's own `.bk` output files (excluded by default)
+    /// Also search .bk files (bulked's own output)
     #[arg(long)]
     include_bk: bool,
 
-    /// Print human-readable text instead of the editable chunk format
+    /// Print a readable listing instead of chunks (cannot be applied)
     #[arg(long)]
     plain: bool,
 }
 
 impl SearchArgs {
     /// Run `search`, writing the chunk format to `out` and status lines to `err`.
+    /// Returns [`Exit::Nothing`] when there were no matches (like `grep`).
     ///
     /// `search` keeps using [`Execute`] (the production composition root over
     /// the real filesystem and walker); only the output side is injected.
@@ -79,8 +68,9 @@ impl SearchArgs {
         out: &mut dyn Write,
         err: &mut dyn Write,
         color: bool,
-    ) -> Result<(), super::Error> {
+    ) -> Result<Exit, super::Error> {
         // Configure and execute search
+        let pattern = self.pattern.clone();
         let config = ExecuteConfig::new(self.pattern, self.paths)
             .with_context_lines(self.context)
             .with_respect_gitignore(!self.no_ignore)
@@ -101,20 +91,22 @@ impl SearchArgs {
 
         // When the output went to a file, report a status line.
         if let Some(path) = &self.output {
-            let plural = if chunks == 1 { "chunk" } else { "chunks" };
             writeln!(
                 err,
-                "bulked search wrote {} {} to {}",
-                chunks,
-                plural,
+                "bulked search wrote {} to {}",
+                super::plural(chunks, "chunk"),
                 path.display()
             )?;
         }
 
-        Ok(())
+        if chunks == 0 {
+            writeln!(err, "bulked search: no matches for {pattern:?}")?;
+            return Ok(Exit::Nothing);
+        }
+        Ok(Exit::Ok)
     }
 
-    pub fn handle(self) -> Result<(), super::Error> {
+    pub fn handle(self) -> Result<Exit, super::Error> {
         let mut stderr = io::stderr();
         match self.output.clone() {
             // When writing to a file, never colorize (it's not a terminal).

@@ -254,7 +254,7 @@ fn test_apply_handler_end_to_end_on_memory_fs() {
     assert_eq!(fs.read_to_string(&file).unwrap(), "a\nB\nc\n");
     let out = String::from_utf8(out).unwrap();
     assert!(
-        out.contains("Successfully applied changes to 1 chunks"),
+        out.contains("Applied 1 chunk to 1 file"),
         "unexpected status output: {out:?}"
     );
 }
@@ -286,7 +286,7 @@ fn test_apply_dry_run_writes_nothing_on_memory_fs() {
     assert_eq!(fs.file_count(), 1, "dry-run must not leave staged files");
     let out = String::from_utf8(out).unwrap();
     assert!(
-        out.contains("Would apply 1 chunks to /f.txt"),
+        out.contains("Would apply 1 chunk to /f.txt"),
         "unexpected status output: {out:?}"
     );
 }

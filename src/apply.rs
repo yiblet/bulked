@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 /// Apply a format to the filesystem.
@@ -392,6 +392,104 @@ pub fn verify_plan(plan: &Plan<'_>, fs: &dyn ReadFs) -> Result<(), ApplyErrors> 
     } else {
         Err(errors.into())
     }
+}
+
+/// How many of one file's chunks a `--dry-run` preview found changed vs. identical
+/// to the lines they replace.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewCounts {
+    pub changed: usize,
+    pub unchanged: usize,
+}
+
+/// Write a unified-diff-style preview of `plan` to `out`: for every chunk whose
+/// content differs from the lines it replaces, a `@@ -start,len +start,len @@`
+/// hunk with the original lines as `-` and the replacement as `+`. Chunks that
+/// would write back exactly what is there are counted, not printed.
+///
+/// Meant to run after [`verify_plan`] has succeeded, so every range is known to be
+/// in bounds and to match its fingerprint; it reads each file once more, line by
+/// line, and never holds more than one chunk's original text.
+///
+/// # Errors
+/// Returns the I/O errors encountered while reading the files or writing `out`.
+pub fn write_preview<'a>(
+    plan: &Plan<'a>,
+    fs: &dyn ReadFs,
+    out: &mut dyn Write,
+) -> Result<Vec<(&'a Path, PreviewCounts)>, ApplyErrors> {
+    let io = |e: std::io::Error| ApplyErrors::from(ApplyError::Io(e));
+    let mut summary = Vec::with_capacity(plan.files().len());
+
+    for edits in plan.files() {
+        let path = edits.path();
+        let mut reader = BufReader::new(
+            fs.read(path)
+                .map_err(|e| ApplyErrors::from(modify_err(path, e)))?,
+        );
+        let mut counts = PreviewCounts::default();
+        let mut line_no = 1usize; // 1-indexed line at the read cursor
+        let mut delta = 0isize; // new-side minus old-side line count so far
+        let mut buf = Vec::new();
+
+        for chunk in edits.chunks() {
+            // Skip forward to the chunk, then collect the lines it replaces.
+            while line_no < chunk.start_line() {
+                buf.clear();
+                if reader.read_until(b'\n', &mut buf).map_err(io)? == 0 {
+                    break;
+                }
+                line_no += 1;
+            }
+            let mut original = Vec::new();
+            for _ in 0..chunk.num_lines() {
+                buf.clear();
+                if reader.read_until(b'\n', &mut buf).map_err(io)? == 0 {
+                    break;
+                }
+                original.extend_from_slice(&buf);
+                line_no += 1;
+            }
+
+            let new_lines = chunk.content().split_inclusive('\n').count();
+            if original == chunk.content().as_bytes() {
+                counts.unchanged += 1;
+            } else {
+                if counts.changed == 0 {
+                    writeln!(out, "--- {}", path.display()).map_err(io)?;
+                }
+                counts.changed += 1;
+                let new_start = chunk.start_line().saturating_add_signed(delta);
+                writeln!(
+                    out,
+                    "@@ -{},{} +{},{} @@",
+                    chunk.start_line(),
+                    chunk.num_lines(),
+                    new_start,
+                    new_lines
+                )
+                .map_err(io)?;
+                write_marked_lines(out, '-', &String::from_utf8_lossy(&original)).map_err(io)?;
+                write_marked_lines(out, '+', chunk.content()).map_err(io)?;
+            }
+            delta += new_lines as isize - chunk.num_lines() as isize;
+        }
+        summary.push((path, counts));
+    }
+
+    Ok(summary)
+}
+
+/// Write each line of `text` prefixed with `marker`, flagging a missing final
+/// newline the way `diff` does.
+fn write_marked_lines(out: &mut dyn Write, marker: char, text: &str) -> std::io::Result<()> {
+    for line in text.split_inclusive('\n') {
+        write!(out, "{marker}{line}")?;
+        if !line.ends_with('\n') {
+            writeln!(out, "\n\\ No newline at end of file")?;
+        }
+    }
+    Ok(())
 }
 
 /// Apply a plan to the filesystem atomically.
@@ -938,6 +1036,94 @@ mod tests {
         assert_eq!(fs.read_to_string(&a).unwrap(), "a1\na2\n");
         assert_eq!(fs.read_to_string(&b).unwrap(), "new\nb1\nb2\n");
         assert_eq!(fs.file_count(), 2);
+    }
+
+    // ---- preview tests --------------------------------------------------------
+
+    fn preview(format: &Format, fs: &MemoryFS) -> (String, Vec<PreviewCounts>) {
+        let plan = format.validate().unwrap();
+        let mut out = Vec::new();
+        let summary = write_preview(&plan, fs, &mut out).unwrap();
+        (
+            String::from_utf8(out).unwrap(),
+            summary.into_iter().map(|(_, c)| c).collect(),
+        )
+    }
+
+    #[test]
+    fn test_preview_prints_hunks_for_changed_chunks_only() {
+        let fs = MemoryFS::new();
+        let a = PathBuf::from("/a.txt");
+        fs.add_file(&a, "a\nb\nc\nd\n").unwrap();
+
+        let format = Format::new(vec![
+            Chunk::from_parts(a.clone(), 2, 1, "B\n"),
+            Chunk::from_parts(a.clone(), 3, 1, "c\n"), // identical: not printed
+            Chunk::from_parts(a.clone(), 4, 1, "D1\nD2\n"),
+        ]);
+        let (out, counts) = preview(&format, &fs);
+        assert_eq!(
+            out,
+            "--- /a.txt\n@@ -2,1 +2,1 @@\n-b\n+B\n@@ -4,1 +4,2 @@\n-d\n+D1\n+D2\n"
+        );
+        assert_eq!(
+            counts,
+            vec![PreviewCounts {
+                changed: 2,
+                unchanged: 1
+            }]
+        );
+        // Preview is read-only.
+        assert_eq!(fs.read_to_string(&a).unwrap(), "a\nb\nc\nd\n");
+    }
+
+    #[test]
+    fn test_preview_shifts_new_side_line_numbers_by_earlier_deltas() {
+        let fs = MemoryFS::new();
+        let a = PathBuf::from("/a.txt");
+        fs.add_file(&a, "a\nb\nc\n").unwrap();
+
+        let format = Format::new(vec![
+            Chunk::from_parts(a.clone(), 1, 1, "A1\nA2\nA3\n"), // +2 lines
+            Chunk::from_parts(a.clone(), 3, 1, ""),             // deletion
+        ]);
+        let (out, _) = preview(&format, &fs);
+        assert_eq!(
+            out,
+            "--- /a.txt\n@@ -1,1 +1,3 @@\n-a\n+A1\n+A2\n+A3\n@@ -3,1 +5,0 @@\n-c\n"
+        );
+    }
+
+    #[test]
+    fn test_preview_marks_missing_trailing_newline_and_all_unchanged() {
+        let fs = MemoryFS::new();
+        let a = PathBuf::from("/a.txt");
+        let b = PathBuf::from("/b.txt");
+        fs.add_file(&a, "a\nb").unwrap();
+        fs.add_file(&b, "x\n").unwrap();
+
+        let format = Format::new(vec![
+            Chunk::from_parts(a.clone(), 2, 1, "B"),
+            Chunk::from_parts(b.clone(), 1, 1, "x\n"),
+        ]);
+        let (out, counts) = preview(&format, &fs);
+        assert_eq!(
+            out,
+            "--- /a.txt\n@@ -2,1 +2,1 @@\n-b\n\\ No newline at end of file\n+B\n\\ No newline at end of file\n"
+        );
+        assert_eq!(
+            counts,
+            vec![
+                PreviewCounts {
+                    changed: 1,
+                    unchanged: 0
+                },
+                PreviewCounts {
+                    changed: 0,
+                    unchanged: 1
+                },
+            ]
+        );
     }
 
     // ---- filesystem orchestration tests ---------------------------------------

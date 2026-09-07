@@ -17,8 +17,12 @@ mod types;
 mod walker;
 
 use std::io::IsTerminal;
+use std::process::ExitCode;
 
-fn main() {
+/// Exit status when a command fails; 0 and 1 come from [`cli::Exit`].
+const EXIT_ERROR: u8 = 2;
+
+fn main() -> ExitCode {
     // Render errors as miette reports on stderr, so parse errors show their
     // source spans and stdout stays reserved for the chunk format and status
     // output. Color only when stderr is a terminal.
@@ -30,8 +34,11 @@ fn main() {
         )
     }));
 
-    if let Err(err) = cli::run() {
-        eprintln!("{:?}", miette::Report::new(err));
-        std::process::exit(1);
+    match cli::run() {
+        Ok(exit) => ExitCode::from(exit.code()),
+        Err(err) => {
+            eprintln!("{:?}", miette::Report::new(err));
+            ExitCode::from(EXIT_ERROR)
+        }
     }
 }

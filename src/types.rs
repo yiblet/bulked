@@ -3,6 +3,7 @@
 //! These types represent the pure data structures used throughout bulked.
 //! They have no dependencies on filesystem, network, or other I/O.
 
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -12,13 +13,27 @@ use crate::matcher::{MatchInfo, MatcherError};
 /// A `(path, line)` location to ingest, as produced by another tool.
 ///
 /// Deserializes directly from the `{"path": ..., "line": ...}` records that the
-/// `ingest` subcommand accepts, so no intermediate wire type is needed.
+/// `ingest` subcommand accepts (with the common aliases other tools use), so no
+/// intermediate wire type is needed. Line numbers are 1-based, so zero is
+/// unrepresentable and rejected at decode time.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct IngestInput {
-    #[serde(rename = "path")]
+    #[serde(
+        rename = "path",
+        alias = "file",
+        alias = "file_path",
+        alias = "filepath",
+        alias = "filename"
+    )]
     pub file_path: PathBuf,
-    #[serde(rename = "line")]
-    pub line_number: usize,
+    #[serde(
+        rename = "line",
+        alias = "line_number",
+        alias = "lineno",
+        alias = "linenum",
+        alias = "ln"
+    )]
+    pub line_number: NonZeroUsize,
     // TODO: add support for context messages
     // pub message: String,
 }
@@ -115,8 +130,10 @@ mod tests {
             input,
             IngestInput {
                 file_path: PathBuf::from("src/a.rs"),
-                line_number: 12,
+                line_number: NonZeroUsize::new(12).unwrap(),
             }
         );
+        // Zero is not a line number.
+        assert!(serde_json::from_str::<IngestInput>(r#"{"path":"src/a.rs","line":0}"#).is_err());
     }
 }

@@ -174,7 +174,22 @@ bulked ingest locations.csv | my-edit-script | bulked apply
 ### `apply`
 
 - `-i, --input <FILE>`: Edited chunk file to apply (reads from stdin if not specified)
-- `-d, --dry-run`: Validate and report what would change, without writing any files
+- `-d, --dry-run`: Validate and print a diff of what would change, without writing any files
+
+## Exit status
+
+All three commands follow the `grep` convention:
+
+| Code | Meaning |
+|---|---|
+| 0 | Output was produced (chunks written, edits applied) |
+| 1 | Nothing to do: no matches, no locations, empty input |
+| 2 | An error; details on stderr |
+
+`ingest` counts input lines it could not read as `path:line` and prints one
+summary on stderr with a hint (a forgotten `-n` or `-H`, `rg --heading`,
+`rg --json`, or bulked's own chunk format). If *nothing* could be read it fails
+with exit 2 instead of writing an empty file.
 
 ## Use cases
 

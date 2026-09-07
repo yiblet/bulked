@@ -82,7 +82,7 @@ fn group_inputs_by_path_and_create_ranges(
         paths
             .entry(input.file_path)
             .or_default()
-            .insert(input.line_number);
+            .insert(input.line_number.get());
     }
 
     paths
@@ -520,7 +520,7 @@ mod tests {
 
         let inputs = vec![IngestInput {
             file_path: path.clone(),
-            line_number: 3,
+            line_number: std::num::NonZeroUsize::new(3).unwrap(),
         }];
         let results = ingest(&fs, inputs, 2).unwrap();
 

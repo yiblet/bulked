@@ -1,57 +1,44 @@
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 use clap::Args;
 
-use crate::apply::{apply_plan, verify_plan};
+use crate::apply::{apply_plan, verify_plan, write_preview};
+use crate::cli::{Exit, plural};
 use crate::filesystem::FileSystem;
 use crate::filesystem::physical::PhysicalFS;
 use crate::format::Format;
 
 #[derive(Args, Debug)]
-#[command(after_long_help = "\
-`apply` reads the (edited) chunk format produced by `bulked ingest` or
-`bulked search`, checks that the chunks are valid, and writes each change back
-into the right place in each file. Text outside chunks is ignored, so notes and
-comments you leave in the file are harmless.
+#[command(
+    after_long_help = r#"Reads edited chunks from `bulked search` or `bulked ingest`, validates all of
+them, then rewrites every file in one atomic step. If any chunk fails, nothing
+is written: chunks must not overlap, must point at lines the file has, and their
+fingerprint must still match the file (so a stale or already-applied .bk is
+refused). All problems are reported at once. Text outside chunks is ignored.
 
-Before writing, every chunk is validated together (errors are reported all at
-once, not one at a time): chunks must stay sorted, must not overlap, must point
-at lines that exist in the file, must have a non-zero length, and their original
-lines must still match the header fingerprint. If anything fails, nothing is
-written.
-
-THE CHUNK FORMAT:
-  @path/to/file.rs:<start-line>:<num-lines> #<fingerprint>
-  <the replacement content for those lines>
+CHUNK FORMAT
+  @path/to/file.rs:<start-line>:<line-count> #<fingerprint>
+  replacement text for those lines
   @@@
 
-  * The fingerprint (8 hex digits) is computed by ingest/search from the original
-    lines. apply refuses the plan if those lines changed since — the file was
-    edited, or this .bk was already applied. Hand-written chunks may omit it.
+  * The header counts the ORIGINAL lines; the replacement may be any length.
+  * `@@@-` instead of `@@@` means the file has no trailing newline.
+  * A content line may not start with `@`. Put one extra `\` in front of a line
+    that starts with `@`, `\@` or `\\` (search/ingest do this for you).
+  * Hand-written chunks may omit the fingerprint.
 
-  * Use `@@@-` instead of `@@@` to mean \"no trailing newline at end of file\".
-  * A content line may not start with `@`. If a line of content starts with `@`,
-    `\\@` or `\\\\`, put one extra `\\` in front of it (ingest/search do this for
-    you). Nothing mid-line is escaped.
-  * You may add, remove, or change lines freely inside a chunk — the line count
-    in the header describes the ORIGINAL lines being replaced.
-
-EXAMPLES:
-  # preview what would change, without touching anything
-  bulked apply --input edits.bk --dry-run
-
-  # apply the edits from a file
-  bulked apply --input edits.bk
-
-  # apply edits straight from a pipe
-  bulked ingest locations.csv | my-edit-script | bulked apply")]
+EXAMPLES
+  bulked apply -i edits.bk --dry-run        # print the diff, write nothing
+  bulked apply -i edits.bk
+  bulked ingest locations.csv | my-script | bulked apply"#
+)]
 pub(crate) struct ApplyArgs {
-    /// Edited chunk file to apply (reads from stdin if not specified)
+    /// Edited chunk file to apply (default: stdin)
     #[arg(short, long)]
     pub(crate) input: Option<PathBuf>,
 
-    /// Validate and report what would change, without writing any files
+    /// Validate and print the diff; write nothing
     #[arg(short, long)]
     pub(crate) dry_run: bool,
 }
@@ -68,7 +55,7 @@ impl ApplyArgs {
         fs: &dyn FileSystem,
         input: &mut dyn Read,
         out: &mut dyn Write,
-    ) -> Result<(), super::Error> {
+    ) -> Result<Exit, super::Error> {
         let mut buffer = String::new();
         match &self.input {
             Some(path) => fs.read(path)?.read_to_string(&mut buffer)?,
@@ -81,30 +68,54 @@ impl ApplyArgs {
         let plan = format.validate()?;
 
         if self.dry_run {
-            // Phase 1 only: verify every file (reads + reconstructs, writes nothing).
+            // Phase 1 only: verify every file (reads + reconstructs, writes nothing),
+            // then show what would change as a diff.
             verify_plan(&plan, fs)?;
-            for edits in plan.files() {
-                writeln!(
-                    out,
-                    "Would apply {} chunks to {}",
-                    edits.chunks().len(),
-                    edits.path().display()
-                )?;
+            for (path, counts) in write_preview(&plan, fs, out)? {
+                if counts.changed == 0 {
+                    writeln!(
+                        out,
+                        "Nothing to change in {} ({} already applied)",
+                        path.display(),
+                        plural(counts.unchanged, "chunk")
+                    )?;
+                } else if counts.unchanged == 0 {
+                    writeln!(
+                        out,
+                        "Would apply {} to {}",
+                        plural(counts.changed, "chunk"),
+                        path.display()
+                    )?;
+                } else {
+                    writeln!(
+                        out,
+                        "Would apply {} to {} ({} unchanged)",
+                        plural(counts.changed, "chunk"),
+                        path.display(),
+                        counts.unchanged
+                    )?;
+                }
             }
         } else {
             apply_plan(&plan, fs)?;
             writeln!(
                 out,
-                "Successfully applied changes to {} chunks",
-                plan.chunk_count()
+                "Applied {} to {}",
+                plural(plan.chunk_count(), "chunk"),
+                plural(plan.files().len(), "file")
             )?;
         }
 
         out.flush()?;
-        Ok(())
+        Ok(Exit::Ok)
     }
 
-    pub fn handle(self) -> Result<(), super::Error> {
+    pub fn handle(self) -> Result<Exit, super::Error> {
+        if self.input.is_none() && io::stdin().is_terminal() {
+            eprintln!(
+                "bulked apply: reading chunks from standard input; pass --input edits.bk or pipe a .bk file (Ctrl-D to finish)"
+            );
+        }
         self.run(&PhysicalFS, &mut io::stdin(), &mut io::stdout())
     }
 }
