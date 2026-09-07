@@ -192,6 +192,18 @@ impl Format {
         self.0.is_empty()
     }
 
+    /// Drops the fingerprint from every chunk, so `apply` will replace the lines
+    /// without checking that they still match what the chunk was generated from.
+    ///
+    /// Chunks sort by `(path, range)` only, so the order is unchanged.
+    #[must_use]
+    pub fn without_fingerprints(mut self) -> Self {
+        for chunk in &mut self.0 {
+            chunk.fingerprint = None;
+        }
+        self
+    }
+
     /// Converts a slice of match results into a Format.
     /// Each match result is converted to a chunk containing the match line
     /// along with its before and after context lines.
@@ -388,15 +400,6 @@ impl Chunk {
     pub fn match_range(&self) -> Option<&Range<usize>> {
         self.match_range.as_ref()
     }
-
-    /// `true` if the content ends with `\n`.
-    ///
-    /// This decides the terminator when serializing: `@@@` when the content already
-    /// ends the line, `\n@@@-` otherwise (the file has no trailing newline at EOF).
-    /// It is derived from `content`, so a chunk can never serialize to unparseable text.
-    pub fn ends_with_newline(&self) -> bool {
-        self.content.ends_with('\n')
-    }
 }
 
 pub struct Display<'a> {
@@ -409,8 +412,34 @@ pub struct Display<'a> {
 /// [`crate::format::escaping`]), optionally wrapping the bytes in `highlight` in
 /// ANSI red. Escaping is decided per line *before* any color codes are inserted,
 /// so a match that begins mid-line can never be mistaken for a line start.
+/// Write a chunk body: `content` with each line escaped, then the terminator
+/// token. Content that already ends with `'\n'` is closed by `@@@`; otherwise the
+/// line is finished and "no trailing newline at EOF" is marked with `@@@-`. No
+/// newline is written after the terminator.
+pub(crate) fn write_body(
+    f: &mut dyn fmt::Write,
+    content: &str,
+    highlight: Option<&Range<usize>>,
+) -> fmt::Result {
+    write_escaped_content(f, content, highlight)?;
+    if content.ends_with('\n') {
+        f.write_str("@@@")
+    } else {
+        f.write_str("\n@@@-")
+    }
+}
+
+/// The body text `content` serializes to, as [`write_body`] writes it: what sits
+/// between a chunk header line and the end of its `@@@` / `@@@-` token.
+#[must_use]
+pub fn chunk_body(content: &str) -> String {
+    let mut body = String::with_capacity(content.len() + 5);
+    write_body(&mut body, content, None).expect("writing to a String cannot fail");
+    body
+}
+
 fn write_escaped_content(
-    f: &mut fmt::Formatter,
+    f: &mut dyn fmt::Write,
     content: &str,
     highlight: Option<&Range<usize>>,
 ) -> fmt::Result {
@@ -464,15 +493,8 @@ fn display_format(f: &mut fmt::Formatter, format: &Format, highlight: bool) -> s
 
         let content = chunk.content();
         let highlight_range = chunk.match_range().filter(|_| highlight);
-        write_escaped_content(f, content, highlight_range)?;
-
-        // End delimiter: content that already ends with '\n' is closed by `@@@`;
-        // otherwise finish the line and mark "no trailing newline at EOF" with `@@@-`.
-        if chunk.ends_with_newline() {
-            writeln!(f, "@@@")?;
-        } else {
-            writeln!(f, "\n@@@-")?;
-        }
+        write_body(f, content, highlight_range)?;
+        writeln!(f)?;
     }
 
     Ok(())
@@ -649,7 +671,7 @@ mod tests {
         assert_eq!(chunk.num_lines(), 1);
         assert_eq!(chunk.content(), "test content");
         assert_eq!(chunk.path(), Path::new("test.txt"));
-        assert!(!chunk.ends_with_newline());
+        assert!(!chunk.content().ends_with('\n'));
         assert_eq!(chunk.match_range(), None);
     }
 
@@ -666,7 +688,7 @@ mod tests {
         assert_eq!(chunks(&parsed)[0].start_line(), 5);
         assert_eq!(chunks(&parsed)[0].num_lines(), 1);
         assert_eq!(chunks(&parsed)[0].content(), "line 5");
-        assert!(!chunks(&parsed)[0].ends_with_newline());
+        assert!(!chunks(&parsed)[0].content().ends_with('\n'));
         // Serializing the parsed chunk reproduces the input exactly.
         assert_eq!(parsed.to_string(), output);
     }
@@ -681,7 +703,7 @@ mod tests {
         let parsed = Format::from_str(&output).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(chunks(&parsed)[0].content(), "line 5\n");
-        assert!(chunks(&parsed)[0].ends_with_newline());
+        assert!(chunks(&parsed)[0].content().ends_with('\n'));
         assert_eq!(parsed.to_string(), output);
     }
 

@@ -247,6 +247,7 @@ fn test_apply_handler_end_to_end_on_memory_fs() {
     ApplyArgs {
         input: None,
         dry_run: false,
+        force: false,
     }
     .run(&fs, &mut input, &mut out)
     .expect("apply should succeed on a valid chunk");
@@ -274,6 +275,7 @@ fn test_apply_dry_run_writes_nothing_on_memory_fs() {
     ApplyArgs {
         input: None,
         dry_run: true,
+        force: false,
     }
     .run(&fs, &mut input, &mut out)
     .expect("dry-run should succeed on a valid chunk");
@@ -288,6 +290,208 @@ fn test_apply_dry_run_writes_nothing_on_memory_fs() {
     assert!(
         out.contains("Would apply 1 chunk to /f.txt"),
         "unexpected status output: {out:?}"
+    );
+}
+
+/// `apply` refuses a stale fingerprint; `apply --force` overwrites the lines anyway.
+#[test]
+fn test_apply_force_ignores_stale_fingerprints_on_memory_fs() {
+    use crate::cli::ApplyArgs;
+    use crate::format::Fingerprint;
+
+    let fs = MemoryFS::new();
+    let file = PathBuf::from("/f.txt");
+    fs.add_file(&file, "a\nCHANGED\nc\n").unwrap();
+    // Generated when line 2 was still `b`.
+    let bk = format!("@/f.txt:2:1 #{}\nB\n@@@\n", Fingerprint::of(b"b\n"));
+
+    let err = ApplyArgs {
+        input: None,
+        dry_run: false,
+        force: false,
+    }
+    .run(&fs, &mut bk.as_bytes(), &mut Vec::new())
+    .expect_err("a stale fingerprint must be refused without --force");
+    assert!(
+        err.to_string()
+            .contains("changed since this chunk was generated"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(fs.read_to_string(&file).unwrap(), "a\nCHANGED\nc\n");
+
+    let mut out: Vec<u8> = Vec::new();
+    ApplyArgs {
+        input: None,
+        dry_run: false,
+        force: true,
+    }
+    .run(&fs, &mut bk.as_bytes(), &mut out)
+    .expect("--force must apply despite the stale fingerprint");
+    assert_eq!(fs.read_to_string(&file).unwrap(), "a\nB\nc\n");
+    assert!(
+        String::from_utf8(out)
+            .unwrap()
+            .contains("Applied 1 chunk to 1 file")
+    );
+}
+
+/// The `refresh` CLI handler, end to end: a `.bk` with one stale and one current
+/// fingerprint is rewritten in place, and the result applies cleanly.
+#[test]
+fn test_refresh_handler_rewrites_bk_in_place_on_memory_fs() {
+    use crate::cli::{ApplyArgs, Exit, RefreshArgs};
+    use crate::format::Fingerprint;
+
+    let fs = MemoryFS::new();
+    let file = PathBuf::from("/f.txt");
+    let bk_path = PathBuf::from("/edits.bk");
+    fs.add_file(&file, "a\nCHANGED\nc\nd\n").unwrap();
+    fs.add_file(
+        &bk_path,
+        &format!(
+            "my notes\n@/f.txt:2:1 #{}\nB\n@@@\n@/f.txt:4:1 #{}\nD\n@@@\n",
+            Fingerprint::of(b"b\n"),
+            Fingerprint::of(b"d\n")
+        ),
+    )
+    .unwrap();
+
+    let mut out: Vec<u8> = Vec::new();
+    let mut err: Vec<u8> = Vec::new();
+    let exit = RefreshArgs {
+        path: Some(bk_path.clone()),
+        output: None,
+        dry_run: false,
+    }
+    .run(&fs, &mut "".as_bytes(), &mut out, &mut err)
+    .expect("refresh should succeed");
+
+    assert_eq!(exit, Exit::Ok);
+    assert!(out.is_empty(), "in-place refresh must not print the chunks");
+    let err = String::from_utf8(err).unwrap();
+    assert!(
+        err.contains("updated 1 of 2 chunks in /edits.bk"),
+        "unexpected status: {err:?}"
+    );
+    assert_eq!(
+        fs.read_to_string(&bk_path).unwrap(),
+        format!(
+            "my notes\n@/f.txt:2:1 #{}\nB\n@@@\n@/f.txt:4:1 #{}\nD\n@@@\n",
+            Fingerprint::of(b"CHANGED\n"),
+            Fingerprint::of(b"d\n")
+        )
+    );
+    assert_eq!(fs.file_count(), 2, "refresh must not leave staged files");
+
+    // Running it again finds nothing to do and leaves the file alone.
+    let mut err: Vec<u8> = Vec::new();
+    let exit = RefreshArgs {
+        path: Some(bk_path.clone()),
+        output: None,
+        dry_run: false,
+    }
+    .run(&fs, &mut "".as_bytes(), &mut Vec::new(), &mut err)
+    .unwrap();
+    assert_eq!(exit, Exit::Nothing);
+    assert!(
+        String::from_utf8(err)
+            .unwrap()
+            .contains("all 2 chunks in /edits.bk are current")
+    );
+
+    // And the refreshed file now applies without --force.
+    ApplyArgs {
+        input: Some(bk_path),
+        dry_run: false,
+        force: false,
+    }
+    .run(&fs, &mut "".as_bytes(), &mut Vec::new())
+    .expect("refreshed chunks must apply");
+    assert_eq!(fs.read_to_string(&file).unwrap(), "a\nB\nc\nD\n");
+}
+
+/// `refresh --dry-run` prints the old-vs-new chunk diff and writes nothing.
+#[test]
+fn test_refresh_dry_run_prints_diff_and_writes_nothing_on_memory_fs() {
+    use crate::cli::{Exit, RefreshArgs};
+    use crate::format::Fingerprint;
+
+    let fs = MemoryFS::new();
+    let bk_path = PathBuf::from("/edits.bk");
+    fs.add_file(&PathBuf::from("/f.txt"), "a\nNEW\nc\nd\n")
+        .unwrap();
+    // Chunk at 2 is unedited (still `b`), chunk at 4 was edited to `D`.
+    let bk = format!(
+        "@/f.txt:2:1 #{}\nb\n@@@\n@/f.txt:4:1 #{}\nD\n@@@\n",
+        Fingerprint::of(b"b\n"),
+        Fingerprint::of(b"d\n")
+    );
+    fs.add_file(&bk_path, &bk).unwrap();
+
+    let mut out: Vec<u8> = Vec::new();
+    let mut err: Vec<u8> = Vec::new();
+    let exit = RefreshArgs {
+        path: Some(bk_path.clone()),
+        output: None,
+        dry_run: true,
+    }
+    .run(&fs, &mut "".as_bytes(), &mut out, &mut err)
+    .unwrap();
+
+    assert_eq!(exit, Exit::Ok);
+    assert_eq!(
+        fs.read_to_string(&bk_path).unwrap(),
+        bk,
+        "dry-run must not write"
+    );
+    assert_eq!(fs.file_count(), 2);
+    let out = String::from_utf8(out).unwrap();
+    assert_eq!(
+        out,
+        format!(
+            "--- @/f.txt:2:1 #{}\n+++ @/f.txt:2:1 #{}  (reread from the file)\n-b\n+NEW\n",
+            Fingerprint::of(b"b\n"),
+            Fingerprint::of(b"NEW\n")
+        ),
+        "chunk 4 is current and must not appear"
+    );
+    let err = String::from_utf8(err).unwrap();
+    assert!(
+        err.contains("would update 1 of 2 chunks in /edits.bk"),
+        "{err:?}"
+    );
+    assert!(err.contains("reread from the file"), "{err:?}");
+}
+
+/// `refresh` with no path filters stdin to stdout; status stays on stderr.
+#[test]
+fn test_refresh_handler_stdin_to_stdout_on_memory_fs() {
+    use crate::cli::{Exit, RefreshArgs};
+    use crate::format::Fingerprint;
+
+    let fs = MemoryFS::new();
+    fs.add_file(&PathBuf::from("/f.txt"), "x\n").unwrap();
+    let bk = format!("@/f.txt:1:1 #{}\nY\n@@@\n", Fingerprint::of(b"old\n"));
+
+    let mut out: Vec<u8> = Vec::new();
+    let mut err: Vec<u8> = Vec::new();
+    let exit = RefreshArgs {
+        path: None,
+        output: None,
+        dry_run: false,
+    }
+    .run(&fs, &mut bk.as_bytes(), &mut out, &mut err)
+    .unwrap();
+
+    assert_eq!(exit, Exit::Ok);
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        format!("@/f.txt:1:1 #{}\nY\n@@@\n", Fingerprint::of(b"x\n"))
+    );
+    assert!(
+        String::from_utf8(err)
+            .unwrap()
+            .starts_with("bulked refresh: updated 1 of 1 chunk")
     );
 }
 

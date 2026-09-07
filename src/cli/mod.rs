@@ -3,10 +3,12 @@ use clap::{Parser, Subcommand};
 mod apply;
 mod error;
 mod ingest;
+mod refresh;
 mod search;
 
 pub(crate) use self::apply::ApplyArgs;
 pub(crate) use self::ingest::IngestArgs;
+pub(crate) use self::refresh::RefreshArgs;
 use self::search::SearchArgs;
 pub use error::Error;
 
@@ -23,6 +25,8 @@ then apply it back to every source file in a single atomic step.")]
                TOOL | bulked ingest            reuse any tool's path:line output
   2. Edit      change the text inside the chunks (editor, script, or LLM)
   3. Apply     bulked apply -i FILE            validate, then write it all back
+               bulked refresh FILE             files changed since step 1? fix the
+                                               stale fingerprints, then apply again
 
 EXAMPLE
   grep -rn 'TODO' src/ | bulked ingest > edits.bk  # or: bulked search TODO src/
@@ -61,6 +65,8 @@ enum Command {
     Ingest(IngestArgs),
     /// Validate edited chunks and write them back to the files
     Apply(ApplyArgs),
+    /// Recompute stale chunk fingerprints from the files as they are now
+    Refresh(RefreshArgs),
 }
 
 /// Process exit status, following the grep convention: 0 when the command
@@ -117,5 +123,6 @@ pub fn run() -> Result<Exit, Error> {
         Command::Ingest(args) => args.handle(),
         Command::Search(args) => args.handle(),
         Command::Apply(args) => args.handle(),
+        Command::Refresh(args) => args.handle(),
     }
 }

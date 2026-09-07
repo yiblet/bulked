@@ -3,10 +3,10 @@ use thiserror::Error;
 
 /// Root error type for CLI operations
 ///
-/// The `Format` and `IngestParse` variants carry miette diagnostic metadata
-/// (source spans, labels, help); they are marked transparent so the report
-/// rendered by `main.rs` shows the underlying diagnostic. All other variants
-/// render with their plain `Display` text.
+/// The `Format`, `IngestParse`, `Apply` and `Refresh` variants carry miette
+/// diagnostic metadata (source spans, labels, help); they are marked transparent
+/// so the report rendered by `main.rs` shows the underlying diagnostic. All other
+/// variants render with their plain `Display` text.
 #[derive(Error, Debug, Diagnostic)]
 pub enum Error {
     #[error(transparent)]
@@ -30,7 +30,12 @@ pub enum Error {
     Ingest(#[from] crate::ingest::IngestError),
 
     #[error(transparent)]
+    #[diagnostic(transparent)]
     Apply(#[from] crate::apply::ApplyErrors),
+
+    #[error(transparent)]
+    #[diagnostic(transparent)]
+    Refresh(#[from] crate::refresh::RefreshError),
 }
 
 #[cfg(test)]

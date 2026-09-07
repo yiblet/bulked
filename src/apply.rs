@@ -81,6 +81,22 @@ pub enum ApplyError {
 #[error("Failed to apply changes:\n{}", .0.iter().map(|e| format!("  - {e}")).collect::<Vec<_>>().join("\n"))]
 pub struct ApplyErrors(pub Vec<ApplyError>);
 
+/// Shown under the error list when at least one chunk failed its fingerprint check.
+pub const STALE_FINGERPRINT_HELP: &str = "if the files are right and the chunks are stale, \
+`bulked refresh FILE` rereads those chunks from the files as they are now (keeping the ones you \
+edited; `--dry-run` shows the difference); `bulked apply --force` overwrites the lines without checking";
+
+impl miette::Diagnostic for ApplyErrors {
+    /// A fingerprint mismatch is the one failure with a built-in next step, so it
+    /// is the only one that gets a `help:` line.
+    fn help(&self) -> Option<Box<dyn std::fmt::Display + '_>> {
+        self.0
+            .iter()
+            .any(|e| matches!(e, ApplyError::ContentChanged { .. }))
+            .then(|| Box::new(STALE_FINGERPRINT_HELP) as Box<dyn std::fmt::Display>)
+    }
+}
+
 impl From<Vec<ApplyError>> for ApplyErrors {
     fn from(errors: Vec<ApplyError>) -> Self {
         Self(errors)
@@ -482,7 +498,11 @@ pub fn write_preview<'a>(
 
 /// Write each line of `text` prefixed with `marker`, flagging a missing final
 /// newline the way `diff` does.
-fn write_marked_lines(out: &mut dyn Write, marker: char, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_marked_lines(
+    out: &mut dyn Write,
+    marker: char,
+    text: &str,
+) -> std::io::Result<()> {
     for line in text.split_inclusive('\n') {
         write!(out, "{marker}{line}")?;
         if !line.ends_with('\n') {

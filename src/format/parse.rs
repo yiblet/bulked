@@ -184,6 +184,35 @@ where
 
 /// Main entry point - parses the entire format
 pub fn parse_format(src: &str) -> Result<Format, FormatError> {
+    let (format, _) = parse_format_with_spans(src)?;
+    Ok(format)
+}
+
+/// Where a chunk lives in the source text it was parsed from.
+///
+/// `tag` is the byte range after `<numlines>` up to the end of the header line
+/// (excluding the line ending): the ` #xxxxxxxx` fingerprint and any surrounding
+/// whitespace, or an empty range where a tag could be inserted. `body` runs from
+/// the first content byte through the `@@@` / `@@@-` terminator token (excluding
+/// any trailing text on that line). Replacing `tag` with ` #<fingerprint>` and
+/// `body` with [`super::types::chunk_body`] rewrites a chunk in place and leaves
+/// every other byte of the file untouched. Spans are returned in source order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkSpans {
+    pub path: PathBuf,
+    pub range: LineRange,
+    pub fingerprint: Option<Fingerprint>,
+    pub tag: std::ops::Range<usize>,
+    pub body: std::ops::Range<usize>,
+}
+
+/// [`parse_format`], also returning one [`ChunkSpans`] per chunk in source order
+/// (the `Format` itself is sorted, so the two are not index-aligned; match them on
+/// `(path, range)`).
+pub fn parse_format_with_spans(src: &str) -> Result<(Format, Vec<ChunkSpans>), FormatError> {
+    let src_len = src.len();
+    let chunk_with_spans = |input| chunk_parser(src_len, input);
+
     // Skip leading whitespace/comments
     let (input, ()) = skip_whitespace_and_comments(src).map_err(|e| match e {
         nom::Err::Error(e) | nom::Err::Failure(e) => e.into_format_error(src),
@@ -193,7 +222,7 @@ pub fn parse_format(src: &str) -> Result<Format, FormatError> {
     })?;
 
     // Parse all chunks
-    let (_, chunks) = many0(preceded(skip_whitespace_and_comments, chunk_parser))
+    let (_, parsed) = many0(preceded(skip_whitespace_and_comments, chunk_with_spans))
         .parse(input)
         .map_err(|e| match e {
             nom::Err::Error(e) | nom::Err::Failure(e) => e.into_format_error(src),
@@ -201,6 +230,8 @@ pub fn parse_format(src: &str) -> Result<Format, FormatError> {
                 src: src.to_string(),
             },
         })?;
+
+    let (chunks, spans): (Vec<Chunk>, Vec<ChunkSpans>) = parsed.into_iter().unzip();
 
     // `Format::new` sorts by (path, range), so a parsed format is sorted by construction.
     let format = Format::new(chunks);
@@ -210,29 +241,60 @@ pub fn parse_format(src: &str) -> Result<Format, FormatError> {
         });
     }
 
-    Ok(format)
+    Ok((format, spans))
 }
 
 /// Returns a parser that consumes a chunk with context for better diagnostics.
-fn chunk_parser(input: &str) -> ParseResult<'_, Chunk> {
+///
+/// `src_len` is the length of the whole source text, used to turn the parser's
+/// remaining-input lengths into byte offsets for the returned [`ChunkSpans`].
+fn chunk_parser(src_len: usize, input: &str) -> ParseResult<'_, (Chunk, ChunkSpans)> {
     let chunk_start_suffix_len = input.len();
     let header_len = input.split_inclusive('\n').next().map_or(0, str::len);
 
-    let (input, (path, range, fingerprint)) = start_delimiter(input)?;
+    let (input, header) = start_delimiter(input)?;
+    let body_start = src_len - input.len();
 
     let (input, mut content) = chunk_content(chunk_start_suffix_len, header_len)(input)?;
 
-    let (input, dash_terminated) = parse_end_delimiter_nom(input)?;
+    let (input, (dash_terminated, after_terminator_len)) = parse_end_delimiter_nom(input)?;
     if dash_terminated && content.ends_with('\n') {
         content.pop();
     }
+
+    let Header {
+        path,
+        range,
+        fingerprint,
+        slot_suffix_lens: (tag_start, tag_end),
+    } = header;
+    let spans = ChunkSpans {
+        path: path.clone(),
+        range,
+        fingerprint,
+        tag: (src_len - tag_start)..(src_len - tag_end),
+        body: body_start..(src_len - after_terminator_len),
+    };
 
     // `@@@-` is not stored on the chunk: the trailing newline was stripped above, so
     // the serializer derives the terminator from `content.ends_with('\n')`.
     Ok((
         input,
-        Chunk::new(path, range, content).with_fingerprint(fingerprint),
+        (
+            Chunk::new(path, range, content).with_fingerprint(fingerprint),
+            spans,
+        ),
     ))
+}
+
+/// A parsed chunk header.
+struct Header {
+    path: PathBuf,
+    range: LineRange,
+    fingerprint: Option<Fingerprint>,
+    /// Remaining-input lengths at the start and end of the fingerprint slot: just
+    /// after `numlines`, and at the end of the header line before its `\r?\n`.
+    slot_suffix_lens: (usize, usize),
 }
 
 /// Parser for the start delimiter: `@path:line:numlines[ #fingerprint]`
@@ -240,7 +302,7 @@ fn chunk_parser(input: &str) -> ParseResult<'_, Chunk> {
 /// Both numbers must be non-zero; `@f:0:1` and `@f:1:0` are failures whose spans
 /// label the zero. Whitespace may follow `numlines` and the optional fingerprint;
 /// any other trailing text is an invalid delimiter whose span labels that text.
-fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, LineRange, Option<Fingerprint>)> {
+fn start_delimiter(input: &str) -> ParseResult<'_, Header> {
     // Use closures to lazily construct errors with the correct suffix length
     let invalid_failure = || nom::Err::Failure(invalid_delimiter_error(input));
     let invalid_error = || nom::Err::Error(invalid_delimiter_error(input));
@@ -266,6 +328,8 @@ fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, LineRange, Option<F
     let numlines = parse_nonzero_segment(numlines_str, input, |value, len| {
         ParserErrorKind::InvalidNumLines { value, len }
     })?;
+    // Everything from here to the line ending is the fingerprint slot.
+    let slot_input = input;
 
     let (input, _) = space0(input)?;
 
@@ -288,6 +352,9 @@ fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, LineRange, Option<F
     };
 
     let (input, _) = space0(input)?;
+    // `space0` also eats a `\r`; keep it out of the slot so a CRLF header stays CRLF.
+    let slot_text = &slot_input[..slot_input.len() - input.len()];
+    let slot_end = input.len() + usize::from(slot_text.ends_with('\r'));
     // Anything else before the end of the header line is an error labelled at
     // that text (e.g. `@f:1:1 oops`).
     let (input, _) = newline(input)
@@ -295,11 +362,12 @@ fn start_delimiter(input: &str) -> ParseResult<'_, (PathBuf, LineRange, Option<F
 
     Ok((
         input,
-        (
-            PathBuf::from(path_str),
-            LineRange::new(line_number, numlines),
+        Header {
+            path: PathBuf::from(path_str),
+            range: LineRange::new(line_number, numlines),
             fingerprint,
-        ),
+            slot_suffix_lens: (slot_input.len(), slot_end),
+        },
     ))
 }
 
@@ -361,16 +429,20 @@ fn chunk_content<'a>(
 
 /// Parse end delimiter: @@@ or @@@- (no newline at end of file)
 /// Allows any text after @@@ until the end of the line (which is ignored).
-fn parse_end_delimiter_nom(input: &str) -> ParseResult<'_, bool> {
+///
+/// Also returns the remaining-input length just after the `@@@` / `@@@-` token, so
+/// the caller can locate the end of the chunk body in the source.
+fn parse_end_delimiter_nom(input: &str) -> ParseResult<'_, (bool, usize)> {
     let (input, _) = tag("@@@").parse(input)?;
 
     let (input, opt_tag) = opt(tag("-")).parse(input)?;
     let dash_terminated = opt_tag.is_some();
+    let after_terminator_len = input.len();
 
     // Allow optional text after @@@ until end of line
     let (input, _) = opt(not_newline).parse(input)?;
     let (input, _) = alt((recognize(newline), recognize(nom::combinator::eof))).parse(input)?;
-    Ok((input, dash_terminated))
+    Ok((input, (dash_terminated, after_terminator_len)))
 }
 
 /// Skip whitespace and comment lines
@@ -665,8 +737,10 @@ line 10
         // Test that Windows line endings (\r\n) are preserved in content
         let input = "@test.txt:1:2\r\n";
 
-        let res = start_delimiter(input).unwrap();
-        assert_eq!(res.0, "");
+        let (rest, header) = start_delimiter(input).unwrap();
+        assert_eq!(rest, "");
+        // The slot ends before the `\r`, so rewriting the tag keeps the CRLF.
+        assert_eq!(header.slot_suffix_lens, ("\r\n".len(), "\r\n".len()));
     }
 
     #[test]
@@ -715,6 +789,41 @@ line 10
             }
             other => panic!("Expected InvalidDelimiter, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_chunk_spans_cover_the_tag_and_the_body() {
+        use super::parse_format_with_spans;
+
+        // Spans come back in source order even though the Format sorts.
+        let src = "hi\n@z:1:1 #deadbeef  \nx\n@@@ trailing\n@a:2:3\ny\n\\@e\n@@@\n@m:4:1#cafebabe\r\nz\r\n@@@-\n";
+        let (format, spans) = parse_format_with_spans(src).unwrap();
+        assert_eq!(chunks(&format)[0].path(), PathBuf::from("a"));
+        let tags: Vec<_> = spans
+            .iter()
+            .map(|s| (s.path.clone(), &src[s.tag.clone()], &src[s.body.clone()]))
+            .collect();
+        assert_eq!(
+            tags,
+            vec![
+                (PathBuf::from("z"), " #deadbeef  ", "x\n@@@"),
+                (PathBuf::from("a"), "", "y\n\\@e\n@@@"),
+                (PathBuf::from("m"), "#cafebabe", "z\r\n@@@-"),
+            ]
+        );
+        assert_eq!(
+            spans[1].tag.start,
+            src.find("@a:2:3").unwrap() + "@a:2:3".len()
+        );
+        assert_eq!(spans[0].fingerprint, Some("deadbeef".parse().unwrap()));
+        assert_eq!(spans[1].fingerprint, None);
+        assert_eq!(spans[2].range.start(), 4);
+
+        // An untagged CRLF header: the empty tag slot sits before the `\r`.
+        let src = "@f:1:1\r\nx\r\n@@@\n";
+        let (_, spans) = parse_format_with_spans(src).unwrap();
+        assert_eq!(spans[0].tag, "@f:1:1".len().."@f:1:1".len());
+        assert_eq!(&src[spans[0].body.clone()], "x\r\n@@@");
     }
 
     #[test]

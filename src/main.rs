@@ -12,6 +12,7 @@ mod ingest;
 #[cfg(test)]
 mod integration_tests;
 mod matcher;
+mod refresh;
 mod searcher;
 mod types;
 mod walker;

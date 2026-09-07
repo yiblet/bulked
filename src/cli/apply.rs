@@ -15,7 +15,8 @@ use crate::format::Format;
 them, then rewrites every file in one atomic step. If any chunk fails, nothing
 is written: chunks must not overlap, must point at lines the file has, and their
 fingerprint must still match the file (so a stale or already-applied .bk is
-refused). All problems are reported at once. Text outside chunks is ignored.
+refused; --force skips this check). All problems are reported at once. Text
+outside chunks is ignored.
 
 CHUNK FORMAT
   @path/to/file.rs:<start-line>:<line-count> #<fingerprint>
@@ -31,6 +32,7 @@ CHUNK FORMAT
 EXAMPLES
   bulked apply -i edits.bk --dry-run        # print the diff, write nothing
   bulked apply -i edits.bk
+  bulked apply -i edits.bk --force           # overwrite lines that changed since ingest
   bulked ingest locations.csv | my-script | bulked apply"#
 )]
 pub(crate) struct ApplyArgs {
@@ -41,6 +43,11 @@ pub(crate) struct ApplyArgs {
     /// Validate and print the diff; write nothing
     #[arg(short, long)]
     pub(crate) dry_run: bool,
+
+    /// Ignore the header fingerprints: overwrite the lines even if they changed
+    /// since the chunks were generated
+    #[arg(short, long)]
+    pub(crate) force: bool,
 }
 
 impl ApplyArgs {
@@ -65,6 +72,13 @@ impl ApplyArgs {
         // Parse the format, then validate it into a plan: one group of sorted,
         // non-overlapping chunks per file. Every structural error is reported here.
         let format = buffer.parse::<Format>()?;
+        // `--force`: a chunk with no fingerprint is applied unchecked, so dropping
+        // the fingerprints is exactly "overwrite regardless of what is there".
+        let format = if self.force {
+            format.without_fingerprints()
+        } else {
+            format
+        };
         let plan = format.validate()?;
 
         if self.dry_run {

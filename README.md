@@ -46,8 +46,9 @@ fn main() {
   ` #<fingerprint>`: eight hex digits that `ingest`/`search` compute from the
   original lines. `apply` refuses the whole file if those lines have changed
   since (you edited the file in between, or already applied this `.bk`), so a
-  stale edit can never land at a shifted position. Chunks you write by hand can
-  leave the fingerprint off; they are applied unchecked.
+  stale edit can never land at a shifted position. `bulked refresh` brings stale
+  chunks back in line with the files, and `apply --force` skips the check. Chunks you write by hand can leave the fingerprint off; they are
+  applied unchecked.
 - Edit the lines between the header and the closing `@@@`.
 - Everything outside chunks is treated as comments and ignored on apply, so
   notes you leave in the file are harmless.
@@ -133,7 +134,8 @@ right place in each file. Before writing, every chunk is validated together
 (errors are reported all at once, not one at a time): chunks must stay sorted,
 must not overlap, must point at lines that exist, must have a non-zero
 length, and their original lines must still match the header fingerprint. If
-anything fails, nothing is written.
+anything fails, nothing is written. When only the fingerprints are the problem,
+`bulked refresh` fixes them (below) or `--force` ignores them.
 
 ```bash
 # preview what would change, without touching anything
@@ -144,6 +146,39 @@ bulked apply --input edits.bk
 
 # apply edits straight from a pipe
 bulked ingest locations.csv | my-edit-script | bulked apply
+```
+
+### `refresh` — fix stale chunks
+
+If the files changed after you generated a `.bk` (you edited them, or the chunks
+are from an older run), `apply` refuses the stale chunks. `refresh` fixes them
+against the files as they are now, deciding per chunk from its fingerprint:
+
+- a chunk you **did not edit** is reread from the file, so it shows the current
+  lines again and is ready to edit (applying the old content would have reverted
+  the file);
+- a chunk you **edited** keeps your edit and gets a new fingerprint, so applying
+  it overwrites the lines that changed;
+- a chunk whose content is **already** what the file has gets a new fingerprint
+  and is reported as already applied.
+
+Everything else in the `.bk`, including comments and chunk order, is left byte
+for byte as it was. Chunks without a fingerprint are not touched, and chunks that
+overlap or point past the end of their file are reported as errors.
+
+```bash
+# see which chunks would change, as a diff of old vs new chunk
+bulked refresh edits.bk --dry-run
+
+# rewrite the stale chunks in place, then apply
+bulked refresh edits.bk
+bulked apply -i edits.bk
+
+# keep the original; write the refreshed copy elsewhere
+bulked refresh edits.bk -o fresh.bk
+
+# as a filter
+cat edits.bk | bulked refresh | bulked apply
 ```
 
 ## Options
@@ -175,15 +210,22 @@ bulked ingest locations.csv | my-edit-script | bulked apply
 
 - `-i, --input <FILE>`: Edited chunk file to apply (reads from stdin if not specified)
 - `-d, --dry-run`: Validate and print a diff of what would change, without writing any files
+- `-f, --force`: Ignore the header fingerprints and overwrite the lines even if they changed since the chunks were generated
+
+### `refresh`
+
+- `PATH`: Chunk file to refresh in place (reads stdin and writes stdout if omitted or `-`)
+- `-o, --output <FILE>`: Write the refreshed chunks to this file instead of back into `PATH`
+- `-d, --dry-run`: Print a diff of the chunks that would change, without writing anything
 
 ## Exit status
 
-All three commands follow the `grep` convention:
+All commands follow the `grep` convention:
 
 | Code | Meaning |
 |---|---|
 | 0 | Output was produced (chunks written, edits applied) |
-| 1 | Nothing to do: no matches, no locations, empty input |
+| 1 | Nothing to do: no matches, no locations, empty input, no stale chunks to refresh |
 | 2 | An error; details on stderr |
 
 `ingest` counts input lines it could not read as `path:line` and prints one
