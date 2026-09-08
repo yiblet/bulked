@@ -186,6 +186,7 @@ cat edits.bk | bulked refresh | bulked apply
 ### Global
 
 - `-v, --verbose`: Enable verbose (DEBUG-level) logging to stderr
+- `--color <auto|always|never>`: When to color output (match highlights, `--dry-run` diffs, error reports). `auto` (default) colors only when the output is a terminal, so redirecting to a file or piping never captures color codes. Like `--verbose`, it may follow the subcommand: `bulked apply --dry-run --color always | less -R`.
 
 ### `ingest`
 

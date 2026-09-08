@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use clap::Args;
 
-use crate::apply::write_marked_lines;
 use crate::cli::{Exit, plural};
+use crate::diff::write_line_diff;
 use crate::filesystem::physical::PhysicalFS;
 use crate::filesystem::staging::StagingFs;
 use crate::filesystem::{FileSystem, WriteFs};
@@ -52,7 +52,7 @@ impl RefreshArgs {
     /// into `PATH`, otherwise to `out`. With `--dry-run` the diff of the chunks
     /// that would change goes to `out` instead and nothing is written. Status
     /// lines go to `err`, so stdout can carry the chunk format in the
-    /// stdin-to-stdout case.
+    /// stdin-to-stdout case. `color` paints the `--dry-run` diff.
     ///
     /// Returns [`Exit::Nothing`] when no chunk was stale and the file was
     /// therefore not touched (in-place and `--dry-run`).
@@ -62,6 +62,7 @@ impl RefreshArgs {
         input: &mut dyn Read,
         out: &mut dyn Write,
         err: &mut dyn Write,
+        color: bool,
     ) -> Result<Exit, super::Error> {
         let mut src = String::new();
         match self.source() {
@@ -77,7 +78,7 @@ impl RefreshArgs {
         write_status(err, &result, &described, self.dry_run)?;
 
         if self.dry_run {
-            write_diff(out, &result.refreshed)?;
+            write_diff(out, &result.refreshed, color)?;
             out.flush()?;
             return Ok(if result.refreshed.is_empty() {
                 Exit::Nothing
@@ -102,17 +103,22 @@ impl RefreshArgs {
         }
     }
 
-    pub fn handle(self) -> Result<Exit, super::Error> {
+    pub fn handle(self, global: super::GlobalArgs) -> Result<Exit, super::Error> {
         if self.source().is_none() && io::stdin().is_terminal() {
             eprintln!(
                 "bulked refresh: reading chunks from standard input; pass a .bk file to refresh it in place (Ctrl-D to finish)"
             );
         }
+        // The diff only ever goes to stdout, so that is the terminal to check.
+        let color = global
+            .color
+            .enabled(self.dry_run && io::stdout().is_terminal());
         self.run(
             &PhysicalFS,
             &mut io::stdin(),
             &mut io::stdout(),
             &mut io::stderr(),
+            color,
         )
     }
 }
@@ -168,9 +174,9 @@ fn write_status(
 }
 
 /// The `--dry-run` preview: for each chunk that would change, its old and new
-/// header, then the old content as `-` lines and the new as `+` lines when the
-/// content itself changes.
-fn write_diff(out: &mut dyn Write, refreshed: &[Refreshed]) -> io::Result<()> {
+/// header, then a line diff of the old content against the new when the content
+/// itself changes.
+fn write_diff(out: &mut dyn Write, refreshed: &[Refreshed], color: bool) -> io::Result<()> {
     for r in refreshed {
         let head = crate::refresh::header(&r.path, r.range);
         writeln!(out, "--- {head} #{}", r.old_fingerprint)?;
@@ -181,8 +187,7 @@ fn write_diff(out: &mut dyn Write, refreshed: &[Refreshed]) -> io::Result<()> {
             describe(r.kind)
         )?;
         if r.kind == RefreshKind::Reread {
-            write_marked_lines(out, '-', &r.old_content)?;
-            write_marked_lines(out, '+', &r.new_content)?;
+            write_line_diff(out, &r.old_content, &r.new_content, color)?;
         }
     }
     Ok(())

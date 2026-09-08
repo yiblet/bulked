@@ -56,12 +56,14 @@ impl ApplyArgs {
     /// This owns all of the subcommand's behavior; [`ApplyArgs::handle`] is the
     /// thin production wrapper that supplies `PhysicalFS`, stdin, and stdout.
     /// `--input` is read through `fs`, otherwise the chunk format is read from
-    /// `input`. Every status line goes to `out`.
+    /// `input`. Every status line goes to `out`; `color` paints the `--dry-run`
+    /// diff.
     pub fn run(
         self,
         fs: &dyn FileSystem,
         input: &mut dyn Read,
         out: &mut dyn Write,
+        color: bool,
     ) -> Result<Exit, super::Error> {
         let mut buffer = String::new();
         match &self.input {
@@ -85,7 +87,7 @@ impl ApplyArgs {
             // Phase 1 only: verify every file (reads + reconstructs, writes nothing),
             // then show what would change as a diff.
             verify_plan(&plan, fs)?;
-            for (path, counts) in write_preview(&plan, fs, out)? {
+            for (path, counts) in write_preview(&plan, fs, out, color)? {
                 if counts.changed == 0 {
                     writeln!(
                         out,
@@ -124,12 +126,13 @@ impl ApplyArgs {
         Ok(Exit::Ok)
     }
 
-    pub fn handle(self) -> Result<Exit, super::Error> {
+    pub fn handle(self, global: super::GlobalArgs) -> Result<Exit, super::Error> {
         if self.input.is_none() && io::stdin().is_terminal() {
             eprintln!(
                 "bulked apply: reading chunks from standard input; pass --input edits.bk or pipe a .bk file (Ctrl-D to finish)"
             );
         }
-        self.run(&PhysicalFS, &mut io::stdin(), &mut io::stdout())
+        let color = global.color.enabled(io::stdout().is_terminal());
+        self.run(&PhysicalFS, &mut io::stdin(), &mut io::stdout(), color)
     }
 }

@@ -420,8 +420,10 @@ pub struct PreviewCounts {
 
 /// Write a unified-diff-style preview of `plan` to `out`: for every chunk whose
 /// content differs from the lines it replaces, a `@@ -start,len +start,len @@`
-/// hunk with the original lines as `-` and the replacement as `+`. Chunks that
-/// would write back exactly what is there are counted, not printed.
+/// hunk holding a line diff of the original lines against the replacement
+/// ([`crate::diff::write_line_diff`]: unchanged lines as context, `-`/`+` for the
+/// rest, red and green when `color` is set). Chunks that would write back exactly
+/// what is there are counted, not printed.
 ///
 /// Meant to run after [`verify_plan`] has succeeded, so every range is known to be
 /// in bounds and to match its fingerprint; it reads each file once more, line by
@@ -433,6 +435,7 @@ pub fn write_preview<'a>(
     plan: &Plan<'a>,
     fs: &dyn ReadFs,
     out: &mut dyn Write,
+    color: bool,
 ) -> Result<Vec<(&'a Path, PreviewCounts)>, ApplyErrors> {
     let io = |e: std::io::Error| ApplyErrors::from(ApplyError::Io(e));
     let mut summary = Vec::with_capacity(plan.files().len());
@@ -485,8 +488,13 @@ pub fn write_preview<'a>(
                     new_lines
                 )
                 .map_err(io)?;
-                write_marked_lines(out, '-', &String::from_utf8_lossy(&original)).map_err(io)?;
-                write_marked_lines(out, '+', chunk.content()).map_err(io)?;
+                crate::diff::write_line_diff(
+                    out,
+                    &String::from_utf8_lossy(&original),
+                    chunk.content(),
+                    color,
+                )
+                .map_err(io)?;
             }
             delta += new_lines as isize - chunk.num_lines() as isize;
         }
@@ -494,22 +502,6 @@ pub fn write_preview<'a>(
     }
 
     Ok(summary)
-}
-
-/// Write each line of `text` prefixed with `marker`, flagging a missing final
-/// newline the way `diff` does.
-pub(crate) fn write_marked_lines(
-    out: &mut dyn Write,
-    marker: char,
-    text: &str,
-) -> std::io::Result<()> {
-    for line in text.split_inclusive('\n') {
-        write!(out, "{marker}{line}")?;
-        if !line.ends_with('\n') {
-            writeln!(out, "\n\\ No newline at end of file")?;
-        }
-    }
-    Ok(())
 }
 
 /// Apply a plan to the filesystem atomically.
@@ -1063,7 +1055,7 @@ mod tests {
     fn preview(format: &Format, fs: &MemoryFS) -> (String, Vec<PreviewCounts>) {
         let plan = format.validate().unwrap();
         let mut out = Vec::new();
-        let summary = write_preview(&plan, fs, &mut out).unwrap();
+        let summary = write_preview(&plan, fs, &mut out, false).unwrap();
         (
             String::from_utf8(out).unwrap(),
             summary.into_iter().map(|(_, c)| c).collect(),
@@ -1095,6 +1087,18 @@ mod tests {
         );
         // Preview is read-only.
         assert_eq!(fs.read_to_string(&a).unwrap(), "a\nb\nc\nd\n");
+    }
+
+    #[test]
+    fn test_preview_shows_unchanged_lines_inside_a_chunk_as_context() {
+        let fs = MemoryFS::new();
+        let a = PathBuf::from("/a.txt");
+        fs.add_file(&a, "a\nb\nc\nd\n").unwrap();
+
+        // Only the middle line of the chunk changes.
+        let format = Format::new(vec![Chunk::from_parts(a.clone(), 1, 3, "a\nB\nc\n")]);
+        let (out, _) = preview(&format, &fs);
+        assert_eq!(out, "--- /a.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+B\n c\n");
     }
 
     #[test]

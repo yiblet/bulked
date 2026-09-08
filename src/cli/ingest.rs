@@ -655,14 +655,16 @@ impl IngestArgs {
         })
     }
 
-    pub fn handle(self) -> Result<Exit, super::Error> {
+    pub fn handle(self, global: super::GlobalArgs) -> Result<Exit, super::Error> {
         if self.reads_stdin() && io::stdin().is_terminal() {
             eprintln!(
                 "bulked ingest: reading locations from standard input; pipe in `grep -n` / `rg -n` output or pass a file (Ctrl-D to finish)"
             );
         }
-        // When writing to a file, never colorize (it's not a terminal).
-        let color = self.output.is_none() && io::stdout().is_terminal();
+        // A file is never a terminal, so `--color auto` never colors it.
+        let color = global
+            .color
+            .enabled(self.output.is_none() && io::stdout().is_terminal());
         self.run(
             &PhysicalFS,
             &mut io::stdin(),

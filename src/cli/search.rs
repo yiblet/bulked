@@ -106,16 +106,16 @@ impl SearchArgs {
         Ok(Exit::Ok)
     }
 
-    pub fn handle(self) -> Result<Exit, super::Error> {
+    pub fn handle(self, global: super::GlobalArgs) -> Result<Exit, super::Error> {
         let mut stderr = io::stderr();
         match self.output.clone() {
-            // When writing to a file, never colorize (it's not a terminal).
+            // A file is never a terminal, so `--color auto` never colors it.
             Some(path) => {
                 let mut file = BufWriter::new(File::create(path)?);
-                self.run(&mut file, &mut stderr, false)
+                self.run(&mut file, &mut stderr, global.color.enabled(false))
             }
             None => {
-                let color = io::stdout().is_terminal();
+                let color = global.color.enabled(io::stdout().is_terminal());
                 self.run(&mut io::stdout(), &mut stderr, color)
             }
         }

@@ -249,7 +249,7 @@ fn test_apply_handler_end_to_end_on_memory_fs() {
         dry_run: false,
         force: false,
     }
-    .run(&fs, &mut input, &mut out)
+    .run(&fs, &mut input, &mut out, false)
     .expect("apply should succeed on a valid chunk");
 
     assert_eq!(fs.read_to_string(&file).unwrap(), "a\nB\nc\n");
@@ -277,7 +277,7 @@ fn test_apply_dry_run_writes_nothing_on_memory_fs() {
         dry_run: true,
         force: false,
     }
-    .run(&fs, &mut input, &mut out)
+    .run(&fs, &mut input, &mut out, false)
     .expect("dry-run should succeed on a valid chunk");
 
     assert_eq!(
@@ -310,7 +310,7 @@ fn test_apply_force_ignores_stale_fingerprints_on_memory_fs() {
         dry_run: false,
         force: false,
     }
-    .run(&fs, &mut bk.as_bytes(), &mut Vec::new())
+    .run(&fs, &mut bk.as_bytes(), &mut Vec::new(), false)
     .expect_err("a stale fingerprint must be refused without --force");
     assert!(
         err.to_string()
@@ -325,7 +325,7 @@ fn test_apply_force_ignores_stale_fingerprints_on_memory_fs() {
         dry_run: false,
         force: true,
     }
-    .run(&fs, &mut bk.as_bytes(), &mut out)
+    .run(&fs, &mut bk.as_bytes(), &mut out, false)
     .expect("--force must apply despite the stale fingerprint");
     assert_eq!(fs.read_to_string(&file).unwrap(), "a\nB\nc\n");
     assert!(
@@ -363,7 +363,7 @@ fn test_refresh_handler_rewrites_bk_in_place_on_memory_fs() {
         output: None,
         dry_run: false,
     }
-    .run(&fs, &mut "".as_bytes(), &mut out, &mut err)
+    .run(&fs, &mut "".as_bytes(), &mut out, &mut err, false)
     .expect("refresh should succeed");
 
     assert_eq!(exit, Exit::Ok);
@@ -390,7 +390,7 @@ fn test_refresh_handler_rewrites_bk_in_place_on_memory_fs() {
         output: None,
         dry_run: false,
     }
-    .run(&fs, &mut "".as_bytes(), &mut Vec::new(), &mut err)
+    .run(&fs, &mut "".as_bytes(), &mut Vec::new(), &mut err, false)
     .unwrap();
     assert_eq!(exit, Exit::Nothing);
     assert!(
@@ -405,7 +405,7 @@ fn test_refresh_handler_rewrites_bk_in_place_on_memory_fs() {
         dry_run: false,
         force: false,
     }
-    .run(&fs, &mut "".as_bytes(), &mut Vec::new())
+    .run(&fs, &mut "".as_bytes(), &mut Vec::new(), false)
     .expect("refreshed chunks must apply");
     assert_eq!(fs.read_to_string(&file).unwrap(), "a\nB\nc\nD\n");
 }
@@ -435,7 +435,7 @@ fn test_refresh_dry_run_prints_diff_and_writes_nothing_on_memory_fs() {
         output: None,
         dry_run: true,
     }
-    .run(&fs, &mut "".as_bytes(), &mut out, &mut err)
+    .run(&fs, &mut "".as_bytes(), &mut out, &mut err, false)
     .unwrap();
 
     assert_eq!(exit, Exit::Ok);
@@ -480,7 +480,7 @@ fn test_refresh_handler_stdin_to_stdout_on_memory_fs() {
         output: None,
         dry_run: false,
     }
-    .run(&fs, &mut bk.as_bytes(), &mut out, &mut err)
+    .run(&fs, &mut bk.as_bytes(), &mut out, &mut err, false)
     .unwrap();
 
     assert_eq!(exit, Exit::Ok);
