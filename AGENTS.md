@@ -29,41 +29,6 @@ Ask first
   Policy belongs in decorators or parameters, e.g. `StagingFs::new(fs, temp_dir)`.
 - Changing the chunk grammar in `format/parse.rs` or `format/escaping.rs`.
 
-## Why things are the way they are
-
-**Staging in `$TMPDIR`, not beside the target.** `search` walks the tree, so a
-sibling temp would show up in its own output, and an interrupted run must leave
-the tree clean. `PhysicalFS::rename` covers the cross-device case (tmpfs) by
-copying to a sibling and renaming that, so the target still flips in one step.
-`filesystem/staging.rs` module docs have the journal semantics.
-
-**The chunk format must round-trip through a human editor.** Serialize →
-hand-edit → parse preserves content. Hence: only a line's *first character* is
-ever escaped; an unescaped `@` line inside a chunk is a parse error rather than
-content (it catches a deleted `@@@`); `@@@-` is derived from the content, never
-stored; text outside chunks is a comment and `refresh` preserves it byte for
-byte by splicing `ChunkSpans` instead of reserializing. Parse errors carry
-`miette` spans; keep the offset bookkeeping when you touch `format/parse.rs`.
-
-**Types carry the proofs.** `LineRange` owns all line arithmetic (`NonZeroUsize`
-start/len, so zero is unrepresentable): no `usize` line math elsewhere.
-`Format` is a private, always-sorted `Vec<Chunk>`. `Plan`/`FileEdits` exist
-only via `Format::validate()` and mean "grouped, sorted, non-overlapping";
-nothing downstream accepts raw chunks. Errors accumulate across files
-(`ApplyErrors`) instead of failing fast, because the user fixes them in one pass.
-
-**Fingerprints make apply refuse stale edits.** `#xxxxxxxx` is FNV-1a of the
-original lines, checked against the very bytes apply skips, in both the verify
-and the staging pass, so a commit only happens if reconstruction saw matching
-bytes. No fingerprint = unchecked. `--force` is `Format::without_fingerprints()`
-before validation, not a flag threaded through apply. `refresh` uses the
-fingerprint to tell an unedited chunk (content hashes to its header → reread
-from the file) from an edited one (keep the edit, update the tag).
-
-**Exit codes follow grep**: 0 output produced, 1 nothing to do, 2 error.
-`--color auto|always|never` is resolved per sink in `handle`, so `auto` never
-colors a file.
-
 ## Where to look
 
 - `src/cli/*.rs` — `run()` is the testable core, `handle()` the one-line wiring.
