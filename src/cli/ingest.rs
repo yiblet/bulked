@@ -1,6 +1,6 @@
 use std::{
     collections::VecDeque,
-    io::{self, BufRead, BufReader, BufWriter, IsTerminal, Read, Write},
+    io::{self, BufRead, BufReader, IsTerminal, Read, Write},
     num::NonZeroUsize,
     path::{Path, PathBuf},
 };
@@ -626,17 +626,15 @@ impl IngestArgs {
 
         let format = crate::format::Format::from_matches(&result);
 
-        let mut file;
-        let sink: &mut dyn Write = match &self.output {
-            Some(path) => {
-                file = BufWriter::new(fs.writer(path)?);
-                &mut file
-            }
-            None => out,
+        let emit = |sink: &mut dyn Write| -> Result<(), super::Error> {
+            write!(sink, "{}", format.display(self.plain, color))?;
+            Ok(sink.flush()?)
         };
-
-        write!(sink, "{}", format.display(self.plain, color))?;
-        sink.flush()?;
+        match &self.output {
+            // Staged in the temp dir and moved into place only once complete.
+            Some(path) => super::write_file_atomically(fs, path, emit)?,
+            None => emit(out)?,
+        }
 
         // When the output went to a file, report a status line.
         if let Some(path) = &self.output {

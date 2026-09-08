@@ -293,6 +293,53 @@ fn test_apply_dry_run_writes_nothing_on_memory_fs() {
     );
 }
 
+/// `ingest -o` writes the file through staging: the result lands in place and
+/// no temp file is left in the filesystem.
+#[test]
+fn test_ingest_output_file_is_written_atomically_on_memory_fs() {
+    use crate::cli::IngestArgs;
+
+    let fs = MemoryFS::new();
+    fs.add_file(&PathBuf::from("/f.txt"), "a\nb\nc\n").unwrap();
+    let out_path = PathBuf::from("/work/edits.bk");
+
+    let mut err: Vec<u8> = Vec::new();
+    IngestArgs {
+        path: None,
+        format: Default::default(),
+        output: Some(out_path.clone()),
+        context: 0,
+        plain: false,
+    }
+    .run(
+        &fs,
+        &mut "/f.txt:2\n".as_bytes(),
+        &mut Vec::new(),
+        &mut err,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(
+        fs.read_to_string(&out_path).unwrap(),
+        format!(
+            "@/f.txt:2:1 #{}\nb\n@@@\n",
+            crate::format::Fingerprint::of(b"b\n")
+        )
+    );
+    assert_eq!(
+        fs.file_count(),
+        2,
+        "no staged temp left behind: {:?}",
+        fs.paths()
+    );
+    assert!(
+        String::from_utf8(err)
+            .unwrap()
+            .contains("wrote 1 chunk to /work/edits.bk")
+    );
+}
+
 /// `apply` refuses a stale fingerprint; `apply --force` overwrites the lines anyway.
 #[test]
 fn test_apply_force_ignores_stale_fingerprints_on_memory_fs() {

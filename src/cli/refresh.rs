@@ -1,13 +1,12 @@
-use std::io::{self, BufWriter, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 
 use clap::Args;
 
 use crate::cli::{Exit, plural};
 use crate::diff::write_line_diff;
+use crate::filesystem::FileSystem;
 use crate::filesystem::physical::PhysicalFS;
-use crate::filesystem::staging::StagingFs;
-use crate::filesystem::{FileSystem, WriteFs};
 use crate::refresh::{Refresh, RefreshKind, Refreshed};
 
 #[derive(Args, Debug)]
@@ -92,7 +91,9 @@ impl RefreshArgs {
             // Rewriting the file we read: leave it untouched when nothing changed.
             Some(_) if in_place && result.refreshed.is_empty() => Ok(Exit::Nothing),
             Some(path) => {
-                write_atomically(fs, path, result.text.as_bytes())?;
+                super::write_file_atomically(fs, path, |w| {
+                    Ok(w.write_all(result.text.as_bytes())?)
+                })?;
                 Ok(Exit::Ok)
             }
             None => {
@@ -191,20 +192,4 @@ fn write_diff(out: &mut dyn Write, refreshed: &[Refreshed], color: bool) -> io::
         }
     }
     Ok(())
-}
-
-/// Write `bytes` to `path` through a [`StagingFs`], so a failure part-way leaves
-/// the existing file (usually the one we just read) intact.
-fn write_atomically(fs: &dyn FileSystem, path: &Path, bytes: &[u8]) -> Result<(), super::Error> {
-    let staging = StagingFs::new(fs);
-    {
-        let mut writer = BufWriter::new(staging.writer(path)?);
-        writer.write_all(bytes)?;
-        writer.flush()?;
-    }
-    staging.commit().map_err(|mut failures| {
-        // `commit` reports every rename it could not perform; there is only one here.
-        let (_, source) = failures.remove(0);
-        super::Error::from(source)
-    })
 }

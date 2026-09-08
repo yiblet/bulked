@@ -113,7 +113,7 @@ impl ApplyArgs {
                 }
             }
         } else {
-            apply_plan(&plan, fs)?;
+            apply_plan(&plan, fs, &super::staging_dir())?;
             writeln!(
                 out,
                 "Applied {} to {}",

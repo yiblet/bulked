@@ -71,7 +71,8 @@ pub trait ReadFs: Send + Sync {
 
 /// Write side of the filesystem port.
 ///
-/// Only apply needs this, and only through [`staging::StagingFs`].
+/// Every command that writes does so through [`staging::StagingFs`], never
+/// directly.
 pub trait WriteFs: Send + Sync {
     /// Open a streaming writer to `path`, creating it or truncating an existing file.
     ///
@@ -80,8 +81,12 @@ pub trait WriteFs: Send + Sync {
     /// contents up front.
     fn writer(&self, path: &Path) -> Result<Box<dyn std::io::Write>, FilesystemError>;
 
-    /// Rename `from` to `to` within this filesystem (atomic on the real FS when both
-    /// live on the same device).
+    /// Move `from` to `to` within this filesystem, replacing `to` if it exists.
+    ///
+    /// On the real FS this is `rename(2)`, atomic when both paths are on one
+    /// device; across devices (the temp dir on a tmpfs, the target elsewhere) the
+    /// adapter copies to a sibling of `to` and renames that, so `to` still only
+    /// ever changes in one step.
     fn rename(&self, from: &Path, to: &Path) -> Result<(), FilesystemError>;
 
     /// Remove a file.

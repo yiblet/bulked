@@ -2,6 +2,8 @@ use std::io::IsTerminal;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::filesystem::staging::StagingFs;
+
 mod apply;
 mod error;
 mod ingest;
@@ -135,6 +137,38 @@ impl Exit {
             Self::Nothing => 1,
         }
     }
+}
+
+/// Where bulked stages the files it writes: the system temp dir (`$TMPDIR`),
+/// never next to the target. This is the one place production chooses it; the
+/// library takes it as a parameter and tests pass a literal.
+pub(crate) fn staging_dir() -> std::path::PathBuf {
+    std::env::temp_dir()
+}
+
+/// Write a file through a [`StagingFs`]: `emit` streams into a temp file in the
+/// staging dir, and only if it returns `Ok` is that moved over `path`. A failure
+/// part-way leaves `path` as it was and no temp behind. Every command's
+/// `-o`/in-place output goes through here.
+pub(crate) fn write_file_atomically(
+    fs: &dyn crate::filesystem::FileSystem,
+    path: &std::path::Path,
+    emit: impl FnOnce(&mut dyn std::io::Write) -> Result<(), Error>,
+) -> Result<(), Error> {
+    use crate::filesystem::WriteFs;
+    use std::io::Write;
+
+    let staging = StagingFs::new(fs, staging_dir());
+    {
+        let mut writer = std::io::BufWriter::new(staging.writer(path)?);
+        emit(&mut writer)?;
+        writer.flush()?;
+    }
+    staging.commit().map_err(|mut failures| {
+        // `commit` reports every move it could not perform; there is only one here.
+        let (_, source) = failures.remove(0);
+        Error::from(source)
+    })
 }
 
 /// `1 chunk`, `2 chunks`: a count with its noun, pluralized with a plain `s`.

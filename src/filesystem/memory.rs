@@ -71,6 +71,14 @@ impl MemoryFS {
             .unwrap_or(false)
     }
 
+    /// Every path currently stored, unordered (test helper).
+    pub fn paths(&self) -> Vec<PathBuf> {
+        self.files
+            .read()
+            .map(|files| files.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Number of files currently stored (test helper for asserting temp cleanup).
     pub fn file_count(&self) -> usize {
         self.files.read().map(|files| files.len()).unwrap_or(0)

@@ -1,11 +1,12 @@
-use std::fs::File;
-use std::io::{self, BufWriter, IsTerminal, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 use clap::Args;
 
 use crate::cli::Exit;
 use crate::execute::{Execute, ExecuteConfig};
+use crate::filesystem::FileSystem;
+use crate::filesystem::physical::PhysicalFS;
 use crate::format::Format;
 
 #[derive(Args, Debug)]
@@ -60,11 +61,12 @@ impl SearchArgs {
     ///
     /// `search` keeps using [`Execute`] (the production composition root over
     /// the real filesystem and walker); only the output side is injected.
-    /// `color` says whether to ANSI-highlight matches in `out`. When `--output`
-    /// is set, [`SearchArgs::handle`] opens that file and passes it as `out`;
-    /// `run` then reports a status line to `err`.
+    /// `color` says whether to ANSI-highlight matches. With `--output` the chunks
+    /// are written to that file through `fs` (staged, then moved into place) and
+    /// a status line goes to `err`; otherwise they go to `out`.
     pub fn run(
         self,
+        fs: &dyn FileSystem,
         out: &mut dyn Write,
         err: &mut dyn Write,
         color: bool,
@@ -80,14 +82,21 @@ impl SearchArgs {
         let result = Execute::new(&config)?;
 
         let mut chunks = 0;
-        for page in result.search_iter() {
-            let matches = page?;
-            let format = Format::from_matches(&matches);
-            chunks += format.len();
-            write!(out, "{}", format.display(self.plain, color))?;
+        let mut emit = |sink: &mut dyn Write| -> Result<(), super::Error> {
+            for page in result.search_iter() {
+                let matches = page?;
+                let format = Format::from_matches(&matches);
+                chunks += format.len();
+                write!(sink, "{}", format.display(self.plain, color))?;
+            }
+            Ok(sink.flush()?)
+        };
+        match &self.output {
+            // Staged in the temp dir and moved into place only once complete, so
+            // the search itself can never walk into its own half-written output.
+            Some(path) => super::write_file_atomically(fs, path, emit)?,
+            None => emit(out)?,
         }
-
-        out.flush()?;
 
         // When the output went to a file, report a status line.
         if let Some(path) = &self.output {
@@ -107,17 +116,10 @@ impl SearchArgs {
     }
 
     pub fn handle(self, global: super::GlobalArgs) -> Result<Exit, super::Error> {
-        let mut stderr = io::stderr();
-        match self.output.clone() {
-            // A file is never a terminal, so `--color auto` never colors it.
-            Some(path) => {
-                let mut file = BufWriter::new(File::create(path)?);
-                self.run(&mut file, &mut stderr, global.color.enabled(false))
-            }
-            None => {
-                let color = global.color.enabled(io::stdout().is_terminal());
-                self.run(&mut io::stdout(), &mut stderr, color)
-            }
-        }
+        // A file is never a terminal, so `--color auto` never colors it.
+        let color = global
+            .color
+            .enabled(self.output.is_none() && io::stdout().is_terminal());
+        self.run(&PhysicalFS, &mut io::stdout(), &mut io::stderr(), color)
     }
 }

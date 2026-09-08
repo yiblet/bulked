@@ -3,10 +3,13 @@
 //! [`StagingFs`] wraps any other [`FileSystem`] and turns every write-side
 //! operation into a **journal entry** instead of a mutation of the inner FS:
 //!
-//! - [`WriteFs::writer`] streams bytes into a temporary file created *beside*
-//!   its target in the inner FS and records `Write { temp, target }`. The temp
-//!   lives in the target's directory (not `/tmp`) so the commit-time rename is
-//!   a same-device, atomic `rename(2)`.
+//! - [`WriteFs::writer`] streams bytes into a temporary file created in the
+//!   `temp_dir` given to [`StagingFs::new`] and records `Write { temp, target }`.
+//!   The temp deliberately lives *away* from the target: `bulked search` over the
+//!   tree never sees half-written output, and a run that is interrupted leaves
+//!   nothing behind in the user's directories. The commit-time move is the inner
+//!   FS's [`WriteFs::rename`], which the physical adapter makes atomic for the
+//!   target even when the temp dir is on another device.
 //! - [`WriteFs::rename`] records `Rename { from, to }` and returns `Ok` without
 //!   touching the inner FS.
 //! - [`WriteFs::remove_file`] records `Remove { path }` and returns `Ok`
@@ -32,7 +35,7 @@ use super::{FileSystem, FilesystemError, ReadFs, WriteFs};
 
 /// One journaled write-side operation recorded by [`StagingFs`].
 enum StagedOp {
-    /// Bytes were streamed into `temp` (created beside `target`); on commit,
+    /// Bytes were streamed into `temp` (in the staging temp dir); on commit,
     /// `inner.rename(temp, target)`.
     Write { temp: PathBuf, target: PathBuf },
     /// On commit, `inner.rename(from, to)`.
@@ -45,31 +48,41 @@ enum StagedOp {
 /// whole set of mutations can be committed in order (or discarded on drop).
 pub struct StagingFs<'a> {
     inner: &'a dyn FileSystem,
+    /// Where staged temp files are created, in `inner`. A policy of this
+    /// decorator, supplied by the composition root (`std::env::temp_dir()` in
+    /// production), not a property of the filesystem port.
+    temp_dir: PathBuf,
     journal: Mutex<Vec<StagedOp>>,
     counter: AtomicUsize,
+    /// Distinguishes this instance's temps from another `StagingFs` in the same
+    /// process (and from a crashed earlier run that reused the pid).
+    nonce: u32,
 }
 
 impl<'a> StagingFs<'a> {
-    /// Wrap `inner` in a fresh staging filesystem with an empty journal.
-    pub fn new(inner: &'a dyn FileSystem) -> Self {
+    /// Wrap `inner` in a fresh staging filesystem with an empty journal, staging
+    /// its temp files under `temp_dir` (which must exist in `inner`).
+    pub fn new(inner: &'a dyn FileSystem, temp_dir: impl Into<PathBuf>) -> Self {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
         Self {
             inner,
+            temp_dir: temp_dir.into(),
             journal: Mutex::new(Vec::new()),
             counter: AtomicUsize::new(0),
+            nonce,
         }
     }
 
-    /// Pick a unique temp path that lives in the same directory as `target` (so a
-    /// commit can rename within one directory — i.e. one device — and stay atomic).
+    /// Pick a unique temp path in the staging temp dir, named after `target` so
+    /// a leftover from a crash is recognizable.
     fn temp_path_for(&self, target: &Path) -> PathBuf {
         let n = self.counter.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
-        let mut name = target
-            .file_name()
-            .map(std::ffi::OsString::from)
-            .unwrap_or_default();
-        name.push(format!(".bulked-staged-{pid}-{n}"));
-        target.with_file_name(name)
+        let mut name = std::ffi::OsString::from(format!("bulked-{pid}-{}-{n}-", self.nonce));
+        name.push(target.file_name().unwrap_or_default());
+        self.temp_dir.join(name)
     }
 
     fn push(&self, op: StagedOp) {
@@ -195,7 +208,7 @@ mod tests {
         let target = PathBuf::from("/t.txt");
         inner.add_file(&target, "orig").unwrap();
 
-        let staging = StagingFs::new(&inner);
+        let staging = StagingFs::new(&inner, "/tmp");
         stage_write(&staging, &target, "new");
 
         // The target still holds its original content; the write is staged.
@@ -217,7 +230,7 @@ mod tests {
         inner.add_file(&target, "orig").unwrap();
 
         {
-            let staging = StagingFs::new(&inner);
+            let staging = StagingFs::new(&inner, "/tmp");
             stage_write(&staging, &target, "new");
             assert_eq!(inner.file_count(), 2);
             // staging dropped here without commit
@@ -229,13 +242,39 @@ mod tests {
     }
 
     #[test]
+    fn staged_temp_lives_in_the_temp_dir_not_beside_the_target() {
+        let inner = MemoryFS::new();
+        let target = PathBuf::from("/work/src/edits.bk");
+        inner.add_file(&target, "orig").unwrap();
+
+        let staging = StagingFs::new(&inner, "/tmp");
+        stage_write(&staging, &target, "new");
+
+        let temps: Vec<PathBuf> = inner.paths().into_iter().filter(|p| *p != target).collect();
+        assert_eq!(temps.len(), 1);
+        assert_eq!(
+            temps[0].parent(),
+            Some(Path::new("/tmp")),
+            "temp must not be created in the target's directory: {temps:?}"
+        );
+        assert!(
+            temps[0].to_string_lossy().ends_with("-edits.bk"),
+            "temp is named after its target: {temps:?}"
+        );
+
+        staging.commit().unwrap();
+        assert_eq!(inner.read_to_string(&target).unwrap(), "new");
+        assert_eq!(inner.file_count(), 1);
+    }
+
+    #[test]
     fn test_staging_rename_is_deferred_until_commit() {
         let inner = MemoryFS::new();
         let a = PathBuf::from("/a");
         let b = PathBuf::from("/b");
         inner.add_file(&a, "content").unwrap();
 
-        let staging = StagingFs::new(&inner);
+        let staging = StagingFs::new(&inner, "/tmp");
         staging.rename(&a, &b).unwrap();
 
         // Journaled only: the inner FS is untouched.
@@ -255,7 +294,7 @@ mod tests {
         let a = PathBuf::from("/a");
         inner.add_file(&a, "content").unwrap();
 
-        let staging = StagingFs::new(&inner);
+        let staging = StagingFs::new(&inner, "/tmp");
         staging.remove_file(&a).unwrap();
 
         // Journaled only: still present.
@@ -277,7 +316,7 @@ mod tests {
         inner.add_file(&c, "C").unwrap();
 
         {
-            let staging = StagingFs::new(&inner);
+            let staging = StagingFs::new(&inner, "/tmp");
             staging.rename(&a, &b).unwrap();
             staging.remove_file(&c).unwrap();
             // dropped without commit
@@ -298,7 +337,7 @@ mod tests {
         let b = PathBuf::from("/b");
         inner.add_file(&a, "orig").unwrap();
 
-        let staging = StagingFs::new(&inner);
+        let staging = StagingFs::new(&inner, "/tmp");
         stage_write(&staging, &a, "new");
         staging.rename(&a, &b).unwrap();
 
@@ -322,7 +361,7 @@ mod tests {
         let z = PathBuf::from("/z");
         inner.add_file(&a, "orig").unwrap();
 
-        let staging = StagingFs::new(&inner);
+        let staging = StagingFs::new(&inner, "/tmp");
         stage_write(&staging, &a, "new"); // ok
         staging.remove_file(&missing).unwrap(); // will fail on commit
         stage_write(&staging, &z, "never"); // must be cleaned up, never committed

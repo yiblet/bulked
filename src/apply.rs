@@ -509,20 +509,24 @@ pub fn write_preview<'a>(
 /// Two phases:
 /// 1. **Verify** every file ([`verify_plan`]). If anything fails, nothing is
 ///    written, anywhere.
-/// 2. **Commit**: stage each file's reconstruction into a temp file via a
-///    [`StagingFs`], then move every temp into place. Staging streams with bounded
+/// 2. **Commit**: stage each file's reconstruction into a temp file under
+///    `temp_dir` via a [`StagingFs`], then move every temp into place. Staging streams with bounded
 ///    memory; an error during staging drops the `StagingFs`, deleting all temp files
 ///    and leaving every target untouched.
 ///
 /// # Errors
 /// Returns the accumulated errors from verification, or any I/O errors encountered
 /// while staging or committing.
-pub fn apply_plan(plan: &Plan<'_>, fs: &dyn FileSystem) -> Result<(), ApplyErrors> {
+pub fn apply_plan(
+    plan: &Plan<'_>,
+    fs: &dyn FileSystem,
+    temp_dir: &Path,
+) -> Result<(), ApplyErrors> {
     // Phase 1: verify everything up front.
     verify_plan(plan, fs)?;
 
     // Phase 2: stage every file into a tracked temp file, then commit.
-    let staging = StagingFs::new(fs);
+    let staging = StagingFs::new(fs, temp_dir);
     let mut errors = Vec::new();
     for edits in plan.files() {
         if let Err(errs) = stage_file(&staging, edits) {
@@ -574,7 +578,7 @@ pub fn verify_format_to_fs(format: &Format, fs: &dyn FileSystem) -> Result<(), A
 /// this wrapper only has test callers.
 #[cfg(test)]
 pub fn apply_format_to_fs(format: &Format, fs: &dyn FileSystem) -> Result<(), ApplyErrors> {
-    apply_plan(&format.validate()?, fs)
+    apply_plan(&format.validate()?, fs, Path::new("/tmp"))
 }
 
 #[cfg(test)]
